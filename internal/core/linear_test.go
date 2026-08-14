@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	loopglob "github.com/twenz235/workloop/internal/glob"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -91,6 +93,68 @@ func TestLinearFailureReturnsEight(t *testing.T) {
 	_, err := s.Sync(context.Background())
 	if ExitCode(err) != 8 {
 		t.Fatalf("exit=%d err=%v", ExitCode(err), err)
+	}
+}
+
+func TestClaimAndSyncFlushesLinearStateImmediately(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "claim-sync", []string{"claim.go"})
+	t.Setenv("LINEAR_API_TOKEN", "x")
+	s.Config.Linear.Enabled = true
+	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	updates := 0
+	oldClient := defaultLinearHTTPClient
+	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		response := `{"data":{"issueUpdate":{"success":true}}}`
+		if strings.Contains(string(body), "TeamStates") {
+			response = `{"data":{"team":{"states":{"nodes":[{"id":"progress-id","name":"In Progress"}]}}}}`
+		} else if strings.Contains(string(body), "MoveLoopIssue") {
+			updates++
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{}}, nil
+	})}
+	t.Cleanup(func() { defaultLinearHTTPClient = oldClient })
+
+	if _, err := s.ClaimAndSync(context.Background(), "dev", "worker"); err != nil {
+		t.Fatal(err)
+	}
+	if updates != 1 {
+		t.Fatalf("Linear updates=%d, want 1", updates)
+	}
+	runtime, err := s.loadLinearRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.Outbox) != 0 {
+		t.Fatalf("outbox=%v, want empty", runtime.Outbox)
+	}
+}
+
+func TestClaimAndSyncKeepsFailedLinearStateQueued(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "claim-retry", []string{"retry.go"})
+	t.Setenv("LINEAR_API_TOKEN", "x")
+	s.Config.Linear.Enabled = true
+	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	oldClient := defaultLinearHTTPClient
+	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("offline")
+	})}
+	t.Cleanup(func() { defaultLinearHTTPClient = oldClient })
+
+	if _, err := s.ClaimAndSync(context.Background(), "dev", "worker"); err != nil {
+		t.Fatalf("local claim should survive Linear outage: %v", err)
+	}
+	if status, _, err := s.Locate("claim-retry"); err != nil || status != "claimed-dev" {
+		t.Fatalf("status=%s err=%v", status, err)
+	}
+	runtime, err := s.loadLinearRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.Outbox) != 1 || runtime.Outbox[0].StateName != "In Progress" {
+		t.Fatalf("outbox=%v, want queued In Progress", runtime.Outbox)
 	}
 }
 
@@ -300,6 +364,36 @@ func TestGroomPlanCreatesParentAndOrderedSubIssues(t *testing.T) {
 	schemaID := fmt.Sprint(creates[1]["id"])
 	if !strings.Contains(fmt.Sprint(creates[2]["description"]), schemaID) || !strings.Contains(fmt.Sprint(creates[2]["labelIds"]), "ready-id") {
 		t.Fatalf("dependent card is incomplete: %v", creates[2])
+	}
+}
+
+func TestPlanExecutionWavesOnlyGroupConflictFreeCards(t *testing.T) {
+	cards := map[string]map[string]any{
+		"api-a":    {"touches": []string{"apps/api/a.go"}, "depends_on_keys": []string{}},
+		"api-b":    {"touches": []string{"apps/api/a.go"}, "depends_on_keys": []string{}},
+		"web":      {"touches": []string{"apps/web/page.tsx"}, "depends_on_keys": []string{}},
+		"hot":      {"touches": []string{"package.json"}, "depends_on_keys": []string{}},
+		"api-test": {"touches": []string{"apps/api/a_test.go"}, "depends_on_keys": []string{"api-a"}},
+	}
+	waves := planExecutionWaves(
+		[]string{"api-a", "api-b", "web", "hot", "api-test"},
+		cards,
+		[]string{"package.json", "pnpm-lock.yaml"},
+	)
+	if got := fmt.Sprint(waves); got != "[[api-a web] [api-b api-test] [hot]]" {
+		t.Fatalf("waves=%s", got)
+	}
+	for _, wave := range waves {
+		for i, left := range wave {
+			leftTouches := stringSlice(cards[left]["touches"])
+			leftHot := loopglob.PatternsOverlap(leftTouches, []string{"package.json", "pnpm-lock.yaml"})
+			for _, right := range wave[i+1:] {
+				rightTouches := stringSlice(cards[right]["touches"])
+				if leftHot || loopglob.PatternsOverlap(rightTouches, []string{"package.json", "pnpm-lock.yaml"}) || loopglob.PatternsOverlap(leftTouches, rightTouches) {
+					t.Fatalf("conflicting cards share wave: %s and %s", left, right)
+				}
+			}
+		}
 	}
 }
 

@@ -82,7 +82,7 @@ func (s *State) RunSupervisor(ctx context.Context, executable string, once bool)
 				}
 			}
 			for running < limit {
-				card, err := s.Claim(role, "supervisor-"+strconv.Itoa(os.Getpid()))
+				card, err := s.ClaimAndSync(ctx, role, "supervisor-"+strconv.Itoa(os.Getpid()))
 				if err != nil {
 					if code := ExitCode(err); code == 3 || code == 4 || code == 5 {
 						break

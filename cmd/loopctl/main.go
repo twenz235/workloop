@@ -367,7 +367,7 @@ func claimCmd(s *core.State, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return core.E(2, "%v", err)
 	}
-	v, err := s.Claim(*role, *worker)
+	v, err := s.ClaimAndSync(context.Background(), *role, *worker)
 	if err != nil {
 		return err
 	}

@@ -301,9 +301,14 @@ func (s *State) Doctor() (map[string]any, error) {
 	}
 	reservations, _ := s.activeReservations()
 	for _, r := range reservations {
-		status, _, e := s.Locate(r.CardID)
-		if e == nil && (status == "todo" || status == "blocked" || status == "cancelled" || status == "done") {
-			_ = s.releaseReservation(r.CardID)
+		if err := s.withLock(func() error {
+			status, _, locateErr := s.Locate(r.CardID)
+			if locateErr == nil && (status == "todo" || status == "blocked" || status == "cancelled" || status == "done") {
+				return s.releaseReservation(r.CardID)
+			}
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 	}
 	for _, x := range cards {
