@@ -88,6 +88,41 @@ func TestContractHashPreservesCardsWithoutVisuals(t *testing.T) {
 	}
 }
 
+func TestListUsesLinearBoardStatusAndKeepsRuntimeStatusSeparate(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "board", []string{"src/board.go"})
+	if _, err := s.PatchInternal("board", map[string]any{"linear_state": "In Review", "linear_labels": []string{"loop:ready", "type:feature"}}, "Linear snapshot"); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.List("In Review", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0]["status"] != "In Review" || items[0]["runtime_status"] != "todo" {
+		t.Fatalf("items=%v", items)
+	}
+}
+
+func TestStatusUsesLinearBoardCounts(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "status-board", []string{"src/status.go"})
+	if _, err := s.PatchInternal("status-board", map[string]any{"linear_state": "In Review"}, "Linear snapshot"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Status("qa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts, ok := result["counts"].(map[string]int)
+	if !ok || counts["In Review"] != 1 {
+		t.Fatalf("board counts=%v", result["counts"])
+	}
+	runtimeCounts, ok := result["runtime_counts"].(map[string]int)
+	if !ok || runtimeCounts["todo"] != 1 {
+		t.Fatalf("runtime counts=%v", result["runtime_counts"])
+	}
+}
+
 func TestVisualURLValidationRejectsUnsafeMarkdown(t *testing.T) {
 	s := testState(t)
 	var raw map[string]any

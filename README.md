@@ -17,7 +17,18 @@ Workloop is an orchestrator; it does not replace an AI coding agent, issue track
 - **GitHub** — required for branches, pull requests, checks, and the verified merge into `dev`.
 - **Workloop (`loopctl`)** — connects the three systems, owns the durable local queue, isolates workers in Git worktrees, retries safely, and enforces the Dev → QA → merge lifecycle.
 
-In short: Linear decides **what** is ready, Codex or Claude Code performs the work, GitHub carries the reviewed change, and Workloop coordinates the lifecycle between them.
+In short: Linear decides **what** is ready and what people see on the board, Codex or Claude Code performs the work, GitHub carries the reviewed change, and Workloop coordinates the lifecycle between them.
+
+### Which system owns which data?
+
+Linear is the only user-facing board. Its state, labels, priority, project,
+parent/child links, and acceptance checklist are the values shown to people.
+Workloop still keeps a private `.loopctl` runtime for leases, reservations,
+retries, worker metadata, outbox actions, and crash recovery; it is not a
+second board and must not be edited by hand. `loopctl list` and the `counts`
+field from `loopctl status` use the latest Linear snapshot. The
+`runtime_status`/`runtime_counts` fields are diagnostics for the orchestrator,
+not an alternative workflow board.
 
 ## Documentation
 
@@ -33,7 +44,10 @@ Groom → Linear Backlog + loop:ready → Todo → Dev → PR → QA → merge t
 ```
 
 - Grooming creates a complete, explicitly approved work contract.
-- `loopctl sync` imports eligible Linear issues and is idempotent.
+- `loopctl sync` imports eligible Linear issues, refreshes the local Linear
+  snapshot, and is idempotent. State/label changes caused by a claim or worker
+  transition are flushed immediately; the periodic sync repairs missed remote
+  updates and refreshes anything changed in Linear.
 - Dev works in an isolated `loop/<card-id>` branch and opens a PR to `dev`.
 - QA checks the exact head SHA without modifying it.
 - Workloop merges only after QA and GitHub checks pass.

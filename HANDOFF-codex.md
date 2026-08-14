@@ -42,14 +42,15 @@
 | คำ | ความหมาย |
 |---|---|
 | **card** | ใบงาน 1 ใบ = ไฟล์ JSON 1 ไฟล์ |
-| **status** | สถานะของการ์ด = **ชื่อโฟลเดอร์ที่ไฟล์นั้นอยู่** |
+| **board status** | สถานะที่คนเห็นบนกระดาน = **Linear state** ที่ sync ล่าสุดยืนยัน |
+| **runtime status** | สถานะภายใน = ชื่อโฟลเดอร์ local ที่ใช้ claim/lease/retry/recovery; ไม่ใช่กระดานที่สอง |
 | **role** | `dev` หรือ `qa` — สอง orchestrator ที่รันคนละ process |
 | **worker** | agent ลูกที่ทำการ์ด 1 ใบ (dev worker เขียนโค้ด, qa worker ตรวจ) |
 | **claim** | การจองการ์ดภายใน queue transaction แล้วเปลี่ยน authoritative location เข้าโฟลเดอร์ claim |
 | **touches** | รายการ glob ของไฟล์ที่การ์ดจะแก้ — ใช้เป็น**กุญแจล็อก**ของ scheduler |
 | **conflict-free** | การ์ดที่ `touches` ไม่ตัดกับการ์ดที่กำลังรันอยู่ทุกใบ |
 | **in-flight** | การ์ดที่อยู่ระหว่าง `claimed-dev` / `in_review` / `claimed-qa` |
-| **Linear issue** | backlog/source of truth ฝั่งคน; ใช้ UUID เป็น identity ถาวร |
+| **Linear issue** | source of truth ฝั่งคนสำหรับ requirement/approval/priority/labels/project/board status; ใช้ UUID เป็น identity ถาวร |
 | **Definition of Ready (DoR)** | เงื่อนไขขั้นต่ำก่อน `/groom` ติด `loop:ready` และอนุญาตให้ sync เข้า `todo` |
 | **spec revision** | `updatedAt`/revision ของ Linear issue ตอนสร้าง local card ใช้ตรวจ requirement เปลี่ยนกลางงาน |
 
@@ -186,7 +187,7 @@ err = root.Remove(src)          // link สำเร็จแล้วค่อ�
   "approved_by": "linear-user-id",
 
   // --- ระบบจัดการเอง ---
-  "status": "todo",                    // mirror ของโฟลเดอร์ (ดูกฎด้านล่าง)
+  "status": "todo",                    // runtime status ภายใน; board status อยู่ใน Linear
   "hot": false,                        // คำนวณจาก config.hot_paths ตอน add
   "attempts": 0,
   "max_attempts": 2,
@@ -405,11 +406,12 @@ func PatternsOverlap(a, b []string) bool
 sync Linear แบบมีขอบเขต team/project ที่ config อนุญาต:
 1. อ่านเฉพาะ issue ใน Backlog ที่มี `loop:ready`
 2. parse `loop-card`, validate DoR/schema/dependency และตรวจ UUID ซ้ำทั้งระบบ
-3. สร้าง local card ใน `todo` ก่อน แล้วจึงย้าย Linear เป็น Todo; ถ้าขั้นหลัง fail ให้บันทึก pending outbound action และ retry โดยไม่สร้าง card ซ้ำ
-4. อัปเดตสถานะ/PR/finding summary จาก local ไป Linear โดยไม่ทับ requirement ฝั่งคน
-5. คำนวณ `contract_hash`: ถ้าเปลี่ยนก่อน claimให้อัปเดต local cardหลัง validate; ถ้าเปลี่ยนตั้งแต่ `claimed-dev` เป็นต้นไป ให้ `spec_changed=true`, หยุด transition อัตโนมัติ และส่ง `needs_attention`. `updatedAt` เปลี่ยนอย่างเดียวไม่ถือว่า spec เปลี่ยน
-6. ถ้า issue ถูก cancel/archive หรือลบ `loop:ready`: ก่อน claim ให้ย้าย local card ไป `cancelled` เพื่อคง audit trail; หลัง claim ให้ mark `needs_attention` และหยุดที่ safe point
-7. Linear ล่มให้ exit 8, ทำงาน local ที่ claim ไปแล้วต่อได้ แต่ห้าม claim งานใหม่ที่ต้องพึ่ง state/approval จาก Linear
+3. สร้าง internal local card ใน `todo` ก่อน แล้วจึงย้าย Linear เป็น Todo; ถ้าขั้นหลัง fail ให้บันทึก pending outbound action และ retry โดยไม่สร้าง card ซ้ำ
+4. เก็บ snapshot ของ Linear state/labels/updatedAt ใน card เพื่อให้ `list`/`status` แสดงกระดานจาก Linear; local runtime fields ใช้เฉพาะ scheduler และ recovery
+5. อัปเดตสถานะ/PR/finding summary จาก local ไป Linear โดยไม่ทับ requirement ฝั่งคน และ flush outbound state/label action ทันทีหลัง transition เมื่อทำได้
+6. คำนวณ `contract_hash`: ถ้าเปลี่ยนก่อน claimให้อัปเดต local cardหลัง validate; ถ้าเปลี่ยนตั้งแต่ `claimed-dev` เป็นต้นไป ให้ `spec_changed=true`, หยุด transition อัตโนมัติ และส่ง `needs_attention`. `updatedAt` เปลี่ยนอย่างเดียวไม่ถือว่า spec เปลี่ยน
+7. ถ้า issue ถูก cancel/archive หรือลบ `loop:ready`: ก่อน claim ให้ย้าย local card ไป `cancelled` เพื่อคง audit trail; หลัง claim ให้ mark `needs_attention` และหยุดที่ safe point
+8. Linear ล่มให้ exit 8, ทำงาน local ที่ claim ไปแล้วต่อได้ แต่ห้าม claim งานใหม่ที่ต้องพึ่ง state/approval จาก Linear; board snapshot ต้องรายงานว่าอาจ stale
 
 sync ต้อง idempotent ด้วย `linear_issue_uuid` และ durable outbox ใน `runtime/linear.json`; polling ทันทีตอน start และทุก `linear.sync_interval_sec` (default 300)
 
@@ -421,7 +423,7 @@ sync ต้อง idempotent ด้วย `linear_issue_uuid` และ durable 
 - ใช้ queue lock + durable transaction intent: เขียน `.tmp/`, fsync, สร้าง destination แบบ no-overwrite แล้ว commit เข้า `todo/` — **ห้ามเขียนตรงเข้า `todo/`**
 
 #### `loopctl list [--status STATUS] [--linear ID]`
-คืน card summary แบบ deterministic (id, title, status, Linear URL, dependency, worker, PR, flags) เรียง priority แล้ว created time; ไม่แก้ state และห้ามดึง comment/source ที่ไม่จำเป็น
+คืน card summary แบบ deterministic (id, title, Linear board status, labels, priority, Linear URL, PR, flags) เรียง priority แล้ว created time; `runtime_status` ให้เป็น diagnostic-only และไม่ถือเป็น board status; ไม่แก้ state และห้ามดึง comment/source ที่ไม่จำเป็น
 
 #### `loopctl claim --role dev|qa --worker ID`
 หัวใจของระบบ. ทำตามลำดับนี้เป๊ะ ๆ:
@@ -468,7 +470,8 @@ sync ต้อง idempotent ด้วย `linear_issue_uuid` และ durable 
 คืนทุกอย่างที่ orchestrator ต้องใช้ตัดสินใจใน**คำสั่งเดียว** (ออกแบบมาเพื่อไม่ให้ agent ต้องไปไล่ `ls` เอง — ประหยัด token):
 ```json
 {
-  "counts": {"todo":4,"rework":1,"claimed-dev":2,"in_review":1,"claimed-qa":0,
+  "counts": {"Todo":4,"In Progress":3,"In Review":1,"Done":7},
+  "runtime_counts": {"todo":4,"rework":1,"claimed-dev":2,"in_review":1,"claimed-qa":0,
              "needs_attention":1,"blocked":1,"cancelled":1,"done":7},
   "in_flight": 5,
   "open_prs": 2,
@@ -535,12 +538,12 @@ happy path หลัง QA ผ่าน:
 
 | ข้อมูล | เจ้าของความจริง | อีกฝั่งทำอะไรได้ |
 |---|---|---|
-| requirement, acceptance, out-of-scope, priority, approval | Linear | local เก็บ snapshot + revision; ห้ามแก้กลับอัตโนมัติ |
-| claim, worker, retry, rework, conflict, recovery | filesystem | Linear แสดง summary เท่านั้น |
+| requirement, acceptance, out-of-scope, priority, approval, labels, project, parent/child, board status | Linear | local เก็บ snapshot + revision; ห้ามแก้ requirement กลับอัตโนมัติ |
+| claim, worker, retry, rework, conflict, recovery | filesystem | ไม่ใช่ board; Linear แสดงเฉพาะ state/label summary ที่จำเป็น |
 | branch, PR head SHA, CI/merge receipt | Git/GitHub | card และ Linear เก็บ reference |
 | Done | GitHub merged-to-`dev` fact | local/Linear สะท้อนผล |
 
-Linear status mapping ตายตัวตาม category/name ที่ resolve ตอน `init`:
+Linear status mapping ตายตัวตาม category/name ที่ resolve ตอน `init`; mapping เป็น outbound mirror ของ runtime transition แต่ board display อ่านจาก Linear snapshot:
 
 | local | Linear |
 |---|---|
@@ -556,7 +559,7 @@ Linear status mapping ตายตัวตาม category/name ที่ resolv
 - ก่อน claim: `contract_hash` ใหม่ที่ยังผ่าน DoR อัปเดต snapshot ได้
 - ตั้งแต่ claim: `contract_hash` เปลี่ยน = `spec_changed` และ `needs_attention`; ห้าม merge หรือแอบ sync ทับ worker
 - เปลี่ยน title/ข้อความประกอบที่ไม่กระทบ contract อัปเดต Linear ได้โดยไม่ interrupt
-- local execution status ห้ามถูก Linear status ที่คนลากผิดทับ; ให้รายงาน drift และซ่อม Linear จาก local/Git fact เมื่อปลอดภัย
+- runtime execution status ไม่ถูกใช้เป็น board status; ถ้าคนลาก Linear ผิดระหว่าง execution ให้เก็บ Linear snapshot/report drift และหยุดหรือซ่อมเฉพาะเมื่อ policy ของ transition พิสูจน์ได้ ห้ามเอา local folder ไปแสดงแทน Linear บนกระดาน
 
 ## 7.3 `/groom` interaction contract
 

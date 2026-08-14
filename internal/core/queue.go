@@ -129,7 +129,7 @@ func validateDependencies(card *Card, cards []struct {
 func normalizeNew(raw map[string]any, c *Card, cfg *Config) {
 	raw["status"] = "todo"
 	raw["hot"] = loopglob.PatternsOverlap(c.Touches, cfg.HotPaths)
-	defaults := map[string]any{"attempts": 0, "max_attempts": 2, "rework_count": 0, "max_rework": 2, "conflict_skips": 0, "claimed_at": nil, "claimed_by": nil, "worktree": nil, "branch": nil, "pr": nil, "base_sha": nil, "tested_head_sha": nil, "stale": false, "spec_changed": false, "qa_findings": []any{}, "qa_evidence": []any{}, "proposed": []any{}, "history": []any{}}
+	defaults := map[string]any{"attempts": 0, "max_attempts": 2, "rework_count": 0, "max_rework": 2, "conflict_skips": 0, "claimed_at": nil, "claimed_by": nil, "worktree": nil, "branch": nil, "pr": nil, "base_sha": nil, "tested_head_sha": nil, "stale": false, "spec_changed": false, "qa_findings": []any{}, "qa_evidence": []any{}, "proposed": []any{}, "history": []any{}, "linear_labels": []string{}}
 	for k, v := range defaults {
 		if _, ok := raw[k]; !ok {
 			raw[k] = v

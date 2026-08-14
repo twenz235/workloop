@@ -240,6 +240,9 @@ func parseLoopCard(issue linearIssue, cfg *Config) ([]byte, error) {
 	raw["linear_issue_id"] = issue.Identifier
 	raw["linear_issue_uuid"] = issue.ID
 	raw["linear_url"] = issue.URL
+	raw["linear_state"] = issue.StateName
+	raw["linear_labels"] = linearLabels(issue.Labels)
+	raw["linear_updated_at"] = issue.UpdatedAt
 	raw["source_revision"] = issue.UpdatedAt
 	delete(raw, "linear_parent_id")
 	if issue.ParentID != "" {
@@ -390,6 +393,11 @@ func (s *State) flushLinearOutbox(ctx context.Context, client *linearClient) (in
 		}
 		if actionErr != nil {
 			pending = append(pending, a)
+		} else {
+			// The mutation succeeded remotely. Keep the board-facing snapshot
+			// useful immediately; the next full sync will replace the empty
+			// revision with Linear's authoritative updatedAt value.
+			_ = s.applyLinearActionSnapshot(a)
 		}
 	}
 	originalKeys := map[string]bool{}
@@ -482,11 +490,18 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 			}
 		}
 		if existing != nil {
+			metadataChanged, metadataErr := s.syncLinearMetadata(existing.Card.ID, issue)
+			if metadataErr != nil {
+				return nil, metadataErr
+			}
+			if metadataChanged {
+				updated = appendUniqueIdentifier(updated, issue.Identifier)
+			}
 			if issue.ParentID != existing.Card.LinearParentID {
 				if changed, metadataErr := s.syncLinearParent(existing.Card.ID, issue.ParentID, issue.UpdatedAt); metadataErr != nil {
 					return nil, metadataErr
 				} else if changed {
-					updated = append(updated, issue.Identifier)
+					updated = appendUniqueIdentifier(updated, issue.Identifier)
 				}
 			}
 			if existing.Status == "done" || existing.Status == "cancelled" {
@@ -494,6 +509,12 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 			}
 			ready := containsString(issue.Labels, s.Config.Linear.ReadyLabel)
 			isCancelled := issue.StateName == "Canceled" || issue.StateName == "Cancelled" || issue.StateName == "Duplicate"
+			if existing.Status == "needs_attention" && ready && !containsString(issue.Labels, s.Config.Linear.NeedsAttentionLabel) {
+				runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "attention"})
+			}
+			if existing.Status != "needs_attention" && containsString(issue.Labels, s.Config.Linear.NeedsAttentionLabel) {
+				runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "attention-remove"})
+			}
 			if !ready || isCancelled {
 				to, e := s.syncCancellation(existing.Card.ID)
 				if e == nil {
@@ -524,7 +545,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 						to, e := s.syncContractChange(existing.Card.ID, patch, issue.UpdatedAt)
 						if e == nil {
 							if to == "updated" {
-								updated = append(updated, issue.Identifier)
+								updated = appendUniqueIdentifier(updated, issue.Identifier)
 							} else {
 								attention = append(attention, issue.Identifier)
 							}
@@ -549,7 +570,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 		if e != nil {
 			rejected[issue.Identifier] = e.Error()
 			if labelID, labelErr := s.linearLabelID(ctx, client, s.Config.Linear.NeedsAttentionLabel); labelErr != nil || client.addLabel(ctx, issue.ID, labelID) != nil {
-				runtime.Outbox = append(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "attention"})
+				runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "attention"})
 			}
 			continue
 		}
@@ -557,7 +578,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 		if e != nil {
 			rejected[issue.Identifier] = e.Error()
 			if labelID, labelErr := s.linearLabelID(ctx, client, s.Config.Linear.NeedsAttentionLabel); labelErr != nil || client.addLabel(ctx, issue.ID, labelID) != nil {
-				runtime.Outbox = append(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "attention"})
+				runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "attention"})
 			}
 			continue
 		}
@@ -586,7 +607,9 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 		}
 		imported = append(imported, issue.Identifier)
 		if e = client.updateState(ctx, issue.ID, todoState); e != nil {
-			runtime.Outbox = append(runtime.Outbox, linearAction{IssueID: issue.ID, StateID: todoState, Kind: "state"})
+			runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, StateID: todoState, StateName: s.Config.Linear.StatusMap["todo"], Kind: "state"})
+		} else {
+			_ = s.applyLinearActionSnapshot(linearAction{IssueID: issue.ID, StateName: s.Config.Linear.StatusMap["todo"], Kind: "state"})
 		}
 	}
 	runtime.LastSyncAt = Now()
@@ -657,6 +680,122 @@ func (s *State) syncLinearParent(id, parentID, revision string) (bool, error) {
 		return nil
 	})
 	return changed, err
+}
+
+func (s *State) syncLinearMetadata(id string, issue linearIssue) (bool, error) {
+	changed := false
+	err := s.withLock(func() error {
+		status, _, raw, card, err := s.readCardPath(id)
+		if err != nil {
+			return err
+		}
+		labels := linearLabels(issue.Labels)
+		if card.LinearState == issue.StateName && slicesEqual(card.LinearLabels, labels) && card.LinearUpdatedAt == issue.UpdatedAt {
+			return nil
+		}
+		raw["linear_state"] = issue.StateName
+		raw["linear_labels"] = labels
+		raw["linear_updated_at"] = issue.UpdatedAt
+		encoded, err := Encode(raw)
+		if err != nil {
+			return err
+		}
+		if _, _, err := DecodeCard(encoded, &s.Config); err != nil {
+			return err
+		}
+		if err := s.rewrite(id, status, encoded, "sync-linear-metadata", "system/sync"); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return changed, err
+}
+
+func (s *State) applyLinearActionSnapshot(action linearAction) error {
+	return s.withLock(func() error {
+		cards, err := s.AllCards()
+		if err != nil {
+			return err
+		}
+		for _, item := range cards {
+			if item.Card.LinearIssueUUID != action.IssueID {
+				continue
+			}
+			labels := append([]string(nil), item.Card.LinearLabels...)
+			stateName := item.Card.LinearState
+			switch action.Kind {
+			case "state":
+				if action.StateName == "" {
+					return nil
+				}
+				stateName = action.StateName
+			case "attention":
+				labels = append(labels, s.Config.Linear.NeedsAttentionLabel)
+			case "attention-remove":
+				filtered := labels[:0]
+				for _, label := range labels {
+					if label != s.Config.Linear.NeedsAttentionLabel {
+						filtered = append(filtered, label)
+					}
+				}
+				labels = filtered
+			default:
+				return nil
+			}
+			labels = linearLabels(labels)
+			if stateName == item.Card.LinearState && slicesEqual(labels, item.Card.LinearLabels) {
+				return nil
+			}
+			raw := item.Raw
+			raw["linear_state"] = stateName
+			raw["linear_labels"] = labels
+			raw["linear_updated_at"] = ""
+			encoded, err := Encode(raw)
+			if err != nil {
+				return err
+			}
+			if _, _, err := DecodeCard(encoded, &s.Config); err != nil {
+				return err
+			}
+			return s.rewrite(item.Card.ID, item.Status, encoded, "flush-linear-snapshot", "system/linear")
+		}
+		return nil
+	})
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func linearLabels(labels []string) []string {
+	labels = uniqueStrings(labels)
+	sort.Strings(labels)
+	return labels
+}
+
+func appendLinearAction(actions []linearAction, candidate linearAction) []linearAction {
+	for _, action := range actions {
+		if actionKey(action) == actionKey(candidate) {
+			return actions
+		}
+	}
+	return append(actions, candidate)
+}
+
+func appendUniqueIdentifier(values []string, identifier string) []string {
+	if containsString(values, identifier) {
+		return values
+	}
+	return append(values, identifier)
 }
 
 func (s *State) syncCancellation(id string) (string, error) {

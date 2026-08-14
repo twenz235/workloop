@@ -109,7 +109,22 @@ func stateCmd(cmd string, args []string, h handler) error {
 	if err != nil {
 		return err
 	}
-	return h(s, args)
+	err = h(s, args)
+	if linearMutationCommand(cmd) {
+		if s.Config.Linear.Enabled {
+			_, _ = s.FlushLinearOutbox(context.Background())
+		}
+	}
+	return err
+}
+
+func linearMutationCommand(cmd string) bool {
+	switch cmd {
+	case "move", "findings", "resolve", "qa-merge", "sync-done", "reconcile":
+		return true
+	default:
+		return false
+	}
 }
 
 func extractOption(args []string, name string) ([]string, string) {

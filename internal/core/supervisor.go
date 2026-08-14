@@ -69,6 +69,7 @@ func (s *State) RunSupervisor(ctx context.Context, executable string, once bool)
 			case d := <-done:
 				delete(active, d.role+":"+d.cardID)
 				s.finishWorker(ctx, d)
+				s.flushLinearBestEffort(ctx)
 			default:
 				goto drained
 			}
@@ -104,6 +105,7 @@ func (s *State) RunSupervisor(ctx context.Context, executable string, once bool)
 			case d := <-done:
 				delete(active, d.role+":"+d.cardID)
 				s.finishWorker(ctx, d)
+				s.flushLinearBestEffort(ctx)
 			case <-ctx.Done():
 				return nil
 			}
@@ -113,10 +115,17 @@ func (s *State) RunSupervisor(ctx context.Context, executable string, once bool)
 		case d := <-done:
 			delete(active, d.role+":"+d.cardID)
 			s.finishWorker(ctx, d)
+			s.flushLinearBestEffort(ctx)
 		case <-time.After(5 * time.Second):
 		case <-ctx.Done():
 			return nil
 		}
+	}
+}
+
+func (s *State) flushLinearBestEffort(ctx context.Context) {
+	if s.Config.Linear.Enabled {
+		_, _ = s.FlushLinearOutbox(ctx)
 	}
 }
 

@@ -23,13 +23,19 @@ func (s *State) List(status, linear string) ([]map[string]any, error) {
 	}
 	var out []map[string]any
 	for _, x := range cards {
-		if status != "" && x.Status != status {
+		boardStatus := s.boardStatus(x.Card, x.Status)
+		if status != "" && status != boardStatus && status != x.Status && !containsString(x.Card.LinearLabels, status) {
 			continue
 		}
 		if linear != "" && x.Card.LinearIssueUUID != linear && x.Card.LinearIssueID != linear {
 			continue
 		}
-		out = append(out, map[string]any{"id": x.Card.ID, "title": x.Card.Title, "status": x.Status, "priority": x.Card.Priority, "linear_url": x.Card.LinearURL, "claimed_by": x.Card.ClaimedBy, "pr": x.Card.PR, "stale": x.Card.Stale, "spec_changed": x.Card.SpecChanged})
+		out = append(out, map[string]any{
+			"id": x.Card.ID, "title": x.Card.Title, "status": boardStatus, "runtime_status": x.Status,
+			"linear_state": x.Card.LinearState, "linear_labels": x.Card.LinearLabels,
+			"priority": x.Card.Priority, "linear_url": x.Card.LinearURL, "pr": x.Card.PR,
+			"stale": x.Card.Stale, "spec_changed": x.Card.SpecChanged,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		pi, _ := out[i]["priority"].(int)
@@ -77,6 +83,10 @@ func (s *State) Status(role string) (map[string]any, error) {
 		claimed = counts["claimed-qa"]
 	}
 	peer, _ := s.PeerCheck(role)
+	boardCounts, err := s.boardCounts()
+	if err != nil {
+		return nil, err
+	}
 	openPRs, err := s.OpenPRCount(context.Background())
 	if err != nil {
 		return nil, err
@@ -100,7 +110,39 @@ func (s *State) Status(role string) (map[string]any, error) {
 	if slots < 0 {
 		slots = 0
 	}
-	return map[string]any{"counts": counts, "in_flight": counts["claimed-dev"] + counts["in_review"] + counts["claimed-qa"], "open_prs": openPRs, "slots_free": slots, "claimable_now": claimable, "blocked_by_conflict": blockedConflict, "backpressure": s.inFlight() >= s.Config.Limits.MaxInFlight || openPRs >= s.Config.Limits.MaxOpenPRs, "stop": stop, "deadline_passed": deadline, "peer": peer}, nil
+	return map[string]any{"counts": boardCounts, "runtime_counts": counts, "in_flight": counts["claimed-dev"] + counts["in_review"] + counts["claimed-qa"], "open_prs": openPRs, "slots_free": slots, "claimable_now": claimable, "blocked_by_conflict": blockedConflict, "backpressure": s.inFlight() >= s.Config.Limits.MaxInFlight || openPRs >= s.Config.Limits.MaxOpenPRs, "stop": stop, "deadline_passed": deadline, "peer": peer}, nil
+}
+
+func (s *State) boardStatus(c *Card, runtimeStatus string) string {
+	if c.LinearState != "" {
+		return c.LinearState
+	}
+	switch runtimeStatus {
+	case "todo", "blocked":
+		return s.Config.Linear.StatusMap["todo"]
+	case "rework", "claimed-dev":
+		return s.Config.Linear.StatusMap["in_progress"]
+	case "in_review", "claimed-qa":
+		return s.Config.Linear.StatusMap["in_review"]
+	case "done":
+		return s.Config.Linear.StatusMap["done"]
+	case "cancelled":
+		return "Canceled"
+	default:
+		return runtimeStatus
+	}
+}
+
+func (s *State) boardCounts() (map[string]int, error) {
+	cards, err := s.AllCards()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int{}
+	for _, x := range cards {
+		out[s.boardStatus(x.Card, x.Status)]++
+	}
+	return out, nil
 }
 
 func (s *State) Heartbeat(role string, patch map[string]any) (map[string]any, error) {

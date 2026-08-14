@@ -24,6 +24,7 @@ func TestLinearSyncImportsReadyIssueIdempotently(t *testing.T) {
 	t.Setenv("LINEAR_API_TOKEN", token)
 	var mu sync.Mutex
 	updates := 0
+	issueState := "Backlog"
 	oldClient := defaultLinearHTTPClient
 	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Header.Get("Authorization") != token {
@@ -39,11 +40,15 @@ func TestLinearSyncImportsReadyIssueIdempotently(t *testing.T) {
 		case strings.Contains(q, "MoveLoopIssue"):
 			mu.Lock()
 			updates++
+			issueState = "Todo"
 			mu.Unlock()
 			response = `{"data":{"issueUpdate":{"success":true}}}`
 		default:
+			mu.Lock()
+			state := issueState
+			mu.Unlock()
 			desc := fmt.Sprintf("Summary\n```loop-card\n{\"problem\":\"p\",\"desired_outcome\":\"o\",\"out_of_scope\":[\"x\"],\"repo\":%q,\"repo_path\":%q,\"base\":\"dev\",\"tier\":\"L1\",\"touches\":[\"a.go\"],\"acceptance\":[\"works\"],\"verification\":[\"go test ./...\"],\"depends_on\":[],\"risk\":{\"level\":\"low\"},\"rollback_notes\":\"revert\",\"approved_at\":\"now\",\"approved_by\":\"u\"}\n```", s.Config.Repo, s.Config.RepoPath)
-			response = fmt.Sprintf(`{"data":{"team":{"issues":{"nodes":[{"id":"uuid-1","identifier":"FLO-1","title":"Issue","description":%q,"url":"https://linear.test/1","updatedAt":"2026-01-01T00:00:00Z","priority":1,"state":{"name":"Backlog"},"project":{"id":"project-1","name":"Acme"},"labels":{"nodes":[{"name":"loop:ready"},{"name":"type:feature"}]}}]}}}}`, desc)
+			response = fmt.Sprintf(`{"data":{"team":{"issues":{"nodes":[{"id":"uuid-1","identifier":"FLO-1","title":"Issue","description":%q,"url":"https://linear.test/1","updatedAt":"2026-01-01T00:00:00Z","priority":1,"state":{"name":%q},"project":{"id":"project-1","name":"Acme"},"labels":{"nodes":[{"name":"loop:ready"},{"name":"type:feature"}]}}]}}}}`, desc, state)
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 	})}
@@ -74,6 +79,10 @@ func TestLinearSyncImportsReadyIssueIdempotently(t *testing.T) {
 	}
 	if status, _, err := s.Locate("flo-1"); err != nil || status != "todo" {
 		t.Fatalf("status=%s err=%v", status, err)
+	}
+	_, _, card, err := s.ReadCard("flo-1")
+	if err != nil || card.LinearState != "Todo" {
+		t.Fatalf("linear state=%q err=%v", card.LinearState, err)
 	}
 	for _, path := range []string{s.Root + "/config.json", s.Root + "/runtime/linear.json"} {
 		b, _ := os.ReadFile(path)
@@ -129,6 +138,10 @@ func TestClaimAndSyncFlushesLinearStateImmediately(t *testing.T) {
 	if len(runtime.Outbox) != 0 {
 		t.Fatalf("outbox=%v, want empty", runtime.Outbox)
 	}
+	_, _, card, err := s.ReadCard("claim-sync")
+	if err != nil || card.LinearState != "In Progress" {
+		t.Fatalf("linear snapshot=%+v err=%v", card, err)
+	}
 }
 
 func TestClaimAndSyncKeepsFailedLinearStateQueued(t *testing.T) {
@@ -155,6 +168,51 @@ func TestClaimAndSyncKeepsFailedLinearStateQueued(t *testing.T) {
 	}
 	if len(runtime.Outbox) != 1 || runtime.Outbox[0].StateName != "In Progress" {
 		t.Fatalf("outbox=%v, want queued In Progress", runtime.Outbox)
+	}
+}
+
+func TestLinearSyncRequeuesMissingNeedsAttentionLabel(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "attention", []string{"src/attention.go"})
+	if _, err := s.withMoveInternal("attention", "needs_attention", "system/test", "QA failed", nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LINEAR_API_TOKEN", "x")
+	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	oldClient := defaultLinearHTTPClient
+	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		query := string(body)
+		var response string
+		switch {
+		case strings.Contains(query, "TeamStates"):
+			response = `{"data":{"team":{"states":{"nodes":[{"id":"todo-id","name":"Todo"}]}}}}`
+		default:
+			card := string(testCard("attention", []string{"src/attention.go"}))
+			description := fmt.Sprintf("```loop-card\n%s\n```", card)
+			response = fmt.Sprintf(`{"data":{"team":{"issues":{"nodes":[{"id":"uuid-attention","identifier":"FLO-ATTENTION","title":"Attention","description":%q,"url":"https://linear.test/attention","updatedAt":"2026-08-14T00:00:00Z","priority":2,"state":{"name":"In Review"},"project":{"id":"project-1","name":"Acme"},"labels":{"nodes":[{"name":"loop:ready"},{"name":"type:feature"}]}}]}}}}`, description)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{}}, nil
+	})}
+	t.Cleanup(func() { defaultLinearHTTPClient = oldClient })
+
+	result, err := s.Sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["pending"] != 1 {
+		t.Fatalf("result=%v", result)
+	}
+	runtime, err := s.loadLinearRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.Outbox) != 1 || runtime.Outbox[0].Kind != "attention" {
+		t.Fatalf("outbox=%v", runtime.Outbox)
+	}
+	_, _, _, card, err := s.readCardPath("attention")
+	if err != nil || card.LinearState != "In Review" {
+		t.Fatalf("card=%+v err=%v", card, err)
 	}
 }
 

@@ -89,7 +89,7 @@ loopctl groom --plan-file /tmp/approved-plan.json --approved-by alice
 loopctl sync
 ```
 
-Imports eligible `loop:ready` issues from the configured Linear Backlog, creates idempotent local cards, and moves accepted issues to Todo. It automatically reads `LINEAR_API_TOKEN` from `~/.env`.
+Imports eligible `loop:ready` issues from the configured Linear Backlog, creates idempotent internal runtime cards, stores the Linear state and labels used by the board view, and moves accepted issues to Todo. It also refreshes those snapshots for cards already known and retries pending outbound state/label changes. It automatically reads `LINEAR_API_TOKEN` from `~/.env`.
 
 ```bash
 loopctl sync
@@ -155,15 +155,16 @@ Enables or disables the macOS user LaunchAgent. `enable` is idempotent and launc
 loopctl list [--status STATUS] [--linear LINEAR_ID]
 ```
 
-Lists cards, optionally filtering by internal queue status or Linear identifier.
+Lists cards, optionally filtering by Linear state, Linear label, legacy runtime status, or Linear identifier. The `status` field is the latest Linear board state; `runtime_status` is diagnostic-only and is not a second board.
 
 ```bash
 loopctl list
-loopctl list --status review
+loopctl list --status "In Review"
+loopctl list --status loop:needs-attention
 loopctl list --linear ENG-123
 ```
 
-Internal statuses are `todo`, `rework`, `claimed-dev`, `in_review`, `claimed-qa`, `needs_attention`, `blocked`, `cancelled`, and `done`.
+The internal runtime statuses are `todo`, `rework`, `claimed-dev`, `in_review`, `claimed-qa`, `needs_attention`, `blocked`, `cancelled`, and `done`. They support leases, retries, and recovery only. Linear states (`Backlog`, `Todo`, `In Progress`, `In Review`, `Done`, `Canceled`) are the user-facing workflow.
 
 ### `loopctl status`
 
@@ -171,7 +172,7 @@ Internal statuses are `todo`, `rework`, `claimed-dev`, `in_review`, `claimed-qa`
 loopctl status --role dev|qa
 ```
 
-Reports orchestrator state for the selected role, including queue and capacity information.
+Reports orchestrator state for the selected role, including queue and capacity information. `counts` is grouped by the latest Linear board state; `runtime_counts` is the private queue view used for scheduling and recovery. A stale snapshot is possible while Linear is unavailable; active claimed work can continue, but new Linear intake is blocked until sync recovers.
 
 ```bash
 loopctl status --role dev

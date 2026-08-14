@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const Version = "0.2.3"
+const Version = "0.2.4"
 
 var cardIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 var workerIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -127,6 +127,9 @@ type Card struct {
 	LinearIssueID   string          `json:"linear_issue_id"`
 	LinearIssueUUID string          `json:"linear_issue_uuid"`
 	LinearURL       string          `json:"linear_url"`
+	LinearState     string          `json:"linear_state,omitempty"`
+	LinearLabels    []string        `json:"linear_labels,omitempty"`
+	LinearUpdatedAt string          `json:"linear_updated_at,omitempty"`
 	SourceRevision  string          `json:"source_revision"`
 	ContractHash    string          `json:"contract_hash"`
 	ApprovedAt      string          `json:"approved_at"`

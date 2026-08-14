@@ -4,6 +4,12 @@ This guide explains how to set up and operate Workloop. For the exact syntax of 
 
 Workloop must be used with Linear, GitHub, and either Codex or Claude Code. Linear defines approved work, the AI provider performs Dev and QA tasks, GitHub holds pull requests, and Workloop coordinates the lifecycle. Workloop merges verified changes into `dev`; a human remains responsible for deployment and promotion to other environments.
 
+Linear is the only shared board. Keep requirements, acceptance, labels,
+priority, project, parent/child links, and visible state there. Workloop's
+`.loopctl` directory is private runtime storage for claims, leases, retries,
+reservations, worker logs, and recovery; it is not a board to edit or manage
+manually.
+
 ## 1. Prepare the tools
 
 You need:
@@ -144,13 +150,18 @@ loopctl list --status needs_attention
 loopctl list --linear ENG-123
 ```
 
-The usual card lifecycle is:
+The usual Linear board lifecycle is:
 
 ```text
-todo/rework → claimed-dev → in_review → claimed-qa → done
+Backlog + loop:ready → Todo → In Progress → In Review → Done
 ```
 
-QA may send a card to `rework`. A problem requiring a decision is moved to `needs_attention` and never silently discarded.
+The private runtime may briefly use `claimed-dev`, `claimed-qa`, `rework`, or
+`needs_attention` to coordinate workers. QA may send a card back to Linear
+`In Progress`; a problem requiring a decision keeps the last Linear state and
+adds `loop:needs-attention` until a human resolves it. Use `loopctl list` and
+`loopctl status` for the Linear board view; use `runtime_status` only when
+diagnosing a worker or recovery issue.
 
 ## 7. Resolve cards needing human attention
 
