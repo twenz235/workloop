@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -87,11 +88,22 @@ func run(args []string) error {
 
 type handler func(*core.State, []string) error
 
-func stateCmd(_ string, args []string, h handler) error {
+func stateCmd(cmd string, args []string, h handler) error {
 	var root string
 	args, root = extractOption(args, "--state-root")
 	if root == "" {
-		return core.E(2, "--state-root is required")
+		var err error
+		root, err = discoverStateRoot()
+		if err != nil {
+			return err
+		}
+	}
+	if commandNeedsLinearToken(cmd) {
+		if envFile := defaultEnvFile(); envFile != "" {
+			if err := loadStrictEnv(envFile, []string{"LINEAR_API_TOKEN"}, true); err != nil {
+				return err
+			}
+		}
 	}
 	s, err := core.Open(root)
 	if err != nil {
@@ -120,10 +132,10 @@ func extractOption(args []string, name string) ([]string, string) {
 
 func initCmd(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	project := fs.String("project", "", "project name")
-	repo := fs.String("repo-path", "", "repository path")
-	root := fs.String("state-root", "", "state root")
-	envFile := fs.String("env-file", "", "strict env file")
+	project := fs.String("project", "", "project name (default: repository name)")
+	repo := fs.String("repo-path", "", "repository path (default: current Git root)")
+	root := fs.String("state-root", "", "state root (default: <repo>/.loopctl)")
+	envFile := fs.String("env-file", "", "strict env file (default: ~/.env)")
 	linearWorkspace := fs.String("linear-workspace", "", "Linear workspace name")
 	linearWorkspaceID := fs.String("linear-workspace-id", "", "Linear workspace UUID")
 	linearTeam := fs.String("linear-team", "", "Linear team key")
@@ -132,23 +144,49 @@ func initCmd(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return core.E(2, "%v", err)
 	}
+	repoPath, err := discoverGitRoot(*repo)
+	if err != nil {
+		return err
+	}
+	*repo = repoPath
+	if *project == "" {
+		*project = projectFromRepo(repoPath)
+	}
+	if *root == "" {
+		*root = filepath.Join(repoPath, ".loopctl")
+	}
+	if *envFile == "" && !*offline {
+		*envFile = defaultEnvFile()
+	}
 	if *envFile != "" {
-		if err := loadStrictEnv(*envFile, []string{"LINEAR_API_TOKEN"}); err != nil {
+		if err := loadStrictEnv(*envFile, []string{"LINEAR_API_TOKEN"}, true); err != nil {
 			return err
 		}
 	}
 	var bindings []core.LinearConfig
 	if !*offline {
-		if *linearWorkspace == "" || *linearWorkspaceID == "" || *linearTeam == "" || *linearTeamID == "" {
-			return core.E(2, "--linear-workspace, --linear-workspace-id, --linear-team, and --linear-team-id are required")
-		}
-		bindings = append(bindings, core.LinearConfig{Workspace: *linearWorkspace, WorkspaceID: *linearWorkspaceID, Team: *linearTeam, TeamID: *linearTeamID})
 		if os.Getenv("LINEAR_API_TOKEN") == "" {
-			return core.E(8, "LINEAR_API_TOKEN is not set")
+			return core.E(8, "LINEAR_API_TOKEN is not set; add it to ~/.env or pass --env-file")
+		}
+		explicitBinding := *linearWorkspace != "" || *linearWorkspaceID != "" || *linearTeamID != ""
+		if explicitBinding {
+			if *linearWorkspace == "" || *linearWorkspaceID == "" || *linearTeam == "" || *linearTeamID == "" {
+				return core.E(2, "explicit Linear binding requires workspace name/id and team key/id")
+			}
+			bindings = append(bindings, core.LinearConfig{Workspace: *linearWorkspace, WorkspaceID: *linearWorkspaceID, Team: *linearTeam, TeamID: *linearTeamID})
+		} else {
+			binding, _, discoverErr := core.DiscoverLinearBinding(context.Background(), *linearTeam)
+			if discoverErr != nil {
+				return discoverErr
+			}
+			bindings = append(bindings, binding)
 		}
 		if err := core.ValidateLinearBinding(context.Background(), bindings[0]); err != nil {
 			return err
 		}
+	}
+	if err := ensureStateIgnored(repoPath, *root); err != nil {
+		return err
 	}
 	s, err := core.Init(*project, *repo, *root, bindings...)
 	if err != nil {
@@ -162,6 +200,116 @@ func initCmd(args []string) error {
 	}
 	return output(s.Config)
 }
+
+func discoverGitRoot(path string) (string, error) {
+	if path == "" {
+		var err error
+		path, err = os.Getwd()
+		if err != nil {
+			return "", err
+		}
+	}
+	out, err := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", core.E(2, "run loopctl from inside a Git repository or pass --repo-path")
+	}
+	root := filepath.Clean(strings.TrimSpace(string(out)))
+	if resolved, resolveErr := filepath.EvalSymlinks(root); resolveErr == nil {
+		root = resolved
+	}
+	return root, nil
+}
+
+func projectFromRepo(repo string) string {
+	name := strings.ToLower(filepath.Base(repo))
+	name = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(name, "-")
+	name = strings.Trim(name, "-")
+	if len(name) > 32 {
+		name = strings.TrimRight(name[:32], "-")
+	}
+	return name
+}
+
+func discoverStateRoot() (string, error) {
+	if root := os.Getenv("LOOPCTL_STATE_ROOT"); root != "" {
+		return root, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(cwd); resolveErr == nil {
+		cwd = resolved
+	}
+	for dir := cwd; ; dir = filepath.Dir(dir) {
+		candidate := filepath.Join(dir, ".loopctl")
+		if _, statErr := os.Stat(filepath.Join(candidate, "config.json")); statErr == nil {
+			return candidate, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	return "", core.E(2, "Workloop state not found; run 'loopctl init' from the repository")
+}
+
+func defaultEnvFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(home, ".env")
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return ""
+}
+
+func commandNeedsLinearToken(cmd string) bool {
+	return cmd == "sync" || cmd == "groom"
+}
+
+func ensureStateIgnored(repo, stateRoot string) error {
+	rel, err := filepath.Rel(repo, stateRoot)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return nil
+	}
+	out, err := exec.Command("git", "-C", repo, "rev-parse", "--git-path", "info/exclude").Output()
+	if err != nil {
+		return err
+	}
+	path := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(repo, path)
+	}
+	pattern := "/" + filepath.ToSlash(rel) + "/"
+	b, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == pattern {
+			return nil
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if len(b) > 0 && b[len(b)-1] != '\n' {
+		if _, err := f.WriteString("\n"); err != nil {
+			return err
+		}
+	}
+	_, err = f.WriteString(pattern + "\n")
+	return err
+}
+
 func addCmd(s *core.State, args []string) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	file := fs.String("file", "", "card JSON")
@@ -510,8 +658,11 @@ func startCmd(s *core.State, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return core.E(2, "%v", err)
 	}
+	if *envFile == "" {
+		*envFile = defaultEnvFile()
+	}
 	if *envFile != "" {
-		if err := loadStrictEnv(*envFile, []string{"LINEAR_API_TOKEN"}); err != nil {
+		if err := loadStrictEnv(*envFile, []string{"LINEAR_API_TOKEN"}, true); err != nil {
 			return err
 		}
 	}
@@ -534,7 +685,7 @@ func restartCmd(s *core.State, args []string) error {
 	return startCmd(s, args)
 }
 
-func loadStrictEnv(path string, allow []string) error {
+func loadStrictEnv(path string, allow []string, override ...bool) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return core.E(2, "env file: %v", err)
@@ -568,7 +719,8 @@ func loadStrictEnv(path string, allow []string) error {
 		if strings.ContainsAny(parts[1], "`\n\r") || strings.Contains(parts[1], "$(") {
 			return core.E(2, "unsafe env value at line %d", i+1)
 		}
-		if _, exists := os.LookupEnv(parts[0]); !exists {
+		_, exists := os.LookupEnv(parts[0])
+		if !exists || (len(override) > 0 && override[0]) {
 			if err := os.Setenv(parts[0], parts[1]); err != nil {
 				return err
 			}

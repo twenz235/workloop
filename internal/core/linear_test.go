@@ -129,3 +129,37 @@ func TestGroomCreateRequiresApprovalAndCreatesReadyBacklog(t *testing.T) {
 		t.Fatalf("create body missing contract: %s", createBody)
 	}
 }
+
+func TestDiscoverLinearBindingSelectsOnlyTeam(t *testing.T) {
+	t.Setenv("LINEAR_API_TOKEN", "x")
+	old := defaultLinearHTTPClient
+	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body := `{"data":{"organization":{"id":"workspace-1","name":"Acme"},"teams":{"nodes":[{"id":"team-1","name":"Engineering","key":"ENG"}]}}}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})}
+	t.Cleanup(func() { defaultLinearHTTPClient = old })
+	binding, teams, err := DiscoverLinearBinding(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(teams) != 1 || binding.WorkspaceID != "workspace-1" || binding.Team != "ENG" || binding.TeamID != "team-1" {
+		t.Fatalf("binding=%+v teams=%+v", binding, teams)
+	}
+}
+
+func TestDiscoverLinearBindingRequiresChoiceForMultipleTeams(t *testing.T) {
+	t.Setenv("LINEAR_API_TOKEN", "x")
+	old := defaultLinearHTTPClient
+	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body := `{"data":{"organization":{"id":"workspace-1","name":"Acme"},"teams":{"nodes":[{"id":"team-2","name":"Product","key":"PRD"},{"id":"team-1","name":"Engineering","key":"ENG"}]}}}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})}
+	t.Cleanup(func() { defaultLinearHTTPClient = old })
+	if _, _, err := DiscoverLinearBinding(context.Background(), ""); ExitCode(err) != 2 || !strings.Contains(err.Error(), "ENG, PRD") {
+		t.Fatalf("exit=%d err=%v", ExitCode(err), err)
+	}
+	binding, _, err := DiscoverLinearBinding(context.Background(), "prd")
+	if err != nil || binding.TeamID != "team-2" {
+		t.Fatalf("binding=%+v err=%v", binding, err)
+	}
+}

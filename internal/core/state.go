@@ -63,11 +63,7 @@ func Init(project, repoPath, stateRoot string, bindings ...LinearConfig) (*State
 		return nil, E(2, "repo path must be a Git repository root")
 	}
 	if stateRoot == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		stateRoot = filepath.Join(home, ".claude", "loops", project)
+		stateRoot = filepath.Join(repoAbs, ".loopctl")
 	}
 	root, err := filepath.Abs(stateRoot)
 	if err != nil {

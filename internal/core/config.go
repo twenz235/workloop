@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -58,6 +59,83 @@ func ValidateLinearBinding(ctx context.Context, binding LinearConfig) error {
 	defaults.Team = binding.Team
 	defaults.TeamID = binding.TeamID
 	return (&State{Config: Config{Linear: defaults}}).ValidateLinear(ctx)
+}
+
+type LinearTeamOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Key  string `json:"key"`
+}
+
+func DiscoverLinearBinding(ctx context.Context, preferredTeam string) (LinearConfig, []LinearTeamOption, error) {
+	defaults := DefaultLinearConfig()
+	s := &State{Config: Config{Linear: defaults}}
+	c, err := s.linearClient()
+	if err != nil {
+		return LinearConfig{}, nil, err
+	}
+	const query = `query WorkloopBinding($after: String) { organization { id name } teams(first: 100, after: $after) { nodes { id name key } pageInfo { hasNextPage endCursor } } }`
+	var organization struct{ ID, Name string }
+	teams := []LinearTeamOption{}
+	var after any
+	for {
+		var data struct {
+			Organization struct{ ID, Name string }
+			Teams        struct {
+				Nodes    []LinearTeamOption
+				PageInfo struct {
+					HasNextPage bool
+					EndCursor   string
+				}
+			}
+		}
+		if err := c.graphql(ctx, query, map[string]any{"after": after}, &data); err != nil {
+			return LinearConfig{}, nil, E(8, "Linear discovery failed: %v", err)
+		}
+		organization = data.Organization
+		teams = append(teams, data.Teams.Nodes...)
+		if !data.Teams.PageInfo.HasNextPage {
+			break
+		}
+		if data.Teams.PageInfo.EndCursor == "" {
+			return LinearConfig{}, teams, E(8, "Linear team pagination cursor missing")
+		}
+		after = data.Teams.PageInfo.EndCursor
+	}
+	if organization.ID == "" || organization.Name == "" || len(teams) == 0 {
+		return LinearConfig{}, teams, E(2, "Linear workspace has no discoverable team")
+	}
+	var selected *LinearTeamOption
+	if preferredTeam != "" {
+		for i := range teams {
+			if strings.EqualFold(teams[i].Key, preferredTeam) || strings.EqualFold(teams[i].Name, preferredTeam) || teams[i].ID == preferredTeam {
+				selected = &teams[i]
+				break
+			}
+		}
+		if selected == nil {
+			return LinearConfig{}, teams, E(2, "Linear team %q not found; available teams: %s", preferredTeam, linearTeamKeys(teams))
+		}
+	} else if len(teams) == 1 {
+		selected = &teams[0]
+	} else {
+		return LinearConfig{}, teams, E(2, "multiple Linear teams found (%s); rerun with --linear-team KEY", linearTeamKeys(teams))
+	}
+	defaults.Enabled = true
+	defaults.Workspace = organization.Name
+	defaults.WorkspaceID = organization.ID
+	defaults.Team = selected.Key
+	defaults.TeamID = selected.ID
+	return defaults, teams, nil
+}
+
+func linearTeamKeys(teams []LinearTeamOption) string {
+	keys := make([]string, 0, len(teams))
+	for _, team := range teams {
+		keys = append(keys, team.Key)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
 }
 
 func (s *State) ConfigGet(key string) (any, error) {

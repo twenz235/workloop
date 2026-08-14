@@ -96,7 +96,7 @@ err = root.Remove(src)          // link สำเร็จแล้วค่อ�
 ## 4. โครงไฟล์
 
 ```
-<STATE_ROOT>/                      # default: ~/.claude/loops/<project>/
+<STATE_ROOT>/                      # default: <git-root>/.loopctl/
 ├── config.json
 ├── STOP                           # มีไฟล์นี้ = ทุก role หยุดใน tick ถัดไป
 ├── queue/
@@ -251,8 +251,8 @@ Linear description ต้องมี human-readable summary และ fenced bl
 ```jsonc
 {
   "project": "acme-app",
-  "state_root": "/Users/alice/.workloop/acme-app",
-  "worktree_root": "/Users/alice/.workloop/acme-app/worktrees",
+  "state_root": "/Users/alice/src/acme-app/.loopctl",
+  "worktree_root": "/Users/alice/src/acme-app/.loopctl/worktrees",
   "dev":  { "max_workers": 3, "claim_stale_min": 30 },
   "qa":   { "max_workers": 2, "claim_stale_min": 30 },
   "runner": {
@@ -335,7 +335,7 @@ func PatternsOverlap(a, b []string) bool
 **เมื่อไม่แน่ใจให้ตอบว่าทับกัน (fail-safe)** เพราะผลของการตอบผิดสองทางไม่เท่ากัน:
 - ตอบว่าทับทั้งที่ไม่ทับ → เสียความขนานไปนิดหน่อย
 - ตอบว่าไม่ทับทั้งที่ทับ → **สอง worker แก้ไฟล์เดียวกัน = PR conflict ที่ต้องแก้มือ**
-- ทุกคำสั่งรองรับ `--json` (default) และ `--state-root PATH`
+- ทุกคำสั่งรองรับ `--json` (default) และ `--state-root PATH` เป็น override; ค่า default ค้น `<git-root>/.loopctl` จาก cwd/subdirectory หรือ `LOOPCTL_STATE_ROOT`
 - ทุกคำสั่ง **idempotent เท่าที่เป็นไปได้** — เรียกซ้ำต้องไม่พังและไม่ทำผลข้างเคียงซ้ำ
 - ห้ามต่อเน็ต/เรียก `gh`/`git` ยกเว้นคำสั่งที่ระบุ: Linear API (`init`, `sync`, `status`), Git/GitHub (`reconcile`, `gc-worktrees`, `qa-merge`, `sync-done`). ห้ามส่ง source, diff, secret หรือ environment content ไป Linear
 
@@ -353,11 +353,13 @@ func PatternsOverlap(a, b []string) bool
 
 ### คำสั่ง
 
-#### `loopctl init --project NAME --repo-path PATH [--state-root PATH] --linear-workspace NAME --linear-workspace-id UUID --linear-team KEY --linear-team-id UUID`
+#### `loopctl init [--linear-team KEY]` (ทุก flag อื่นเป็น optional override)
 สร้างโครงโฟลเดอร์ + `config.json` ค่าเริ่มต้น
 - ต้องเช็คว่าทุกโฟลเดอร์ย่อยอยู่ `st_dev` เดียวกัน ไม่ผ่าน → exit 7 พร้อมบอกว่าปัญหาคืออะไร
 - idempotent: รันซ้ำบนของที่มีอยู่แล้วต้องไม่ทับ config
-- รับ Linear workspace/team binding แบบ explicit (ไม่มี organization-specific default), validate mapping และตั้งค่า sync เริ่มต้น 300 วินาที; secret เก็บนอก state root
+- derive Git root จาก cwd, project จากชื่อ repo, state ที่ `<git-root>/.loopctl`, และเพิ่ม local `.git/info/exclude` อัตโนมัติ
+- โหลด strict `~/.env`, discover Linear workspace และเลือก team อัตโนมัติเมื่อมีทีมเดียว; หากมีหลายทีมให้คืนรายชื่อและขอเพียง `--linear-team KEY`
+- explicit flags (`--project`, `--repo-path`, `--state-root`, `--env-file`, workspace/team IDs) ยังใช้ override ได้; ไม่มี organization-specific default
 - canonicalize repo path/remote แล้ว bind state กับ repo นี้แบบ immutable; รัน `init` ซ้ำด้วย repo อื่นให้ exit 2
 
 #### `loopctl start [--env-file PATH]` / `stop` / `restart`
@@ -366,7 +368,7 @@ func PatternsOverlap(a, b []string) bool
 - `restart`: เทียบเท่า safe stop แล้ว start; ต้องไม่ duplicate worker/card
 - supervisor crash แล้ว start ใหม่ต้อง reconcile state จาก filesystem/Git/Linear ไม่เชื่อ memory เดิม
 - supervisor ไม่ embed AI model; ใช้ executable ปัจจุบันจาก `os.Executable()` เรียก internal runner โดยไม่ผ่าน shell: `loopctl runner --provider <provider> --role <dev|qa>`. ผู้ใช้ไม่ต้องเรียกคำสั่งนี้เอง. หาก `provider_path` ใช้งานไม่ได้ `start` ต้อง fail validation ห้ามเดาคำสั่งเอง
-- `--env-file` parser อนุญาตเฉพาะบรรทัด `KEY=VALUE`/comment แบบ strict, อ่านเฉพาะ key allowlist (`LINEAR_API_TOKEN`), ไม่ execute/source shell syntax และไม่ override environment ที่ process ได้รับมาแล้ว. file ต้อง owner=current user และ mode ไม่เปิดกว้างกว่า `0600`
+- `--env-file` parser อนุญาตเฉพาะบรรทัด `KEY=VALUE`/comment แบบ strict, อ่านเฉพาะ key allowlist (`LINEAR_API_TOKEN`), ไม่ execute/source shell syntax. owner-only env file ที่เลือกเป็น authoritative และ override ambient value; file ต้อง owner=current user และ modeไม่เปิดกว้างกว่า `0600`
 
 ##### Runner + worktree contract
 
@@ -762,7 +764,7 @@ T39 kill -9 ทุก transaction phase → doctor replay intent ได้ผล
 T40 fake runner รับ envelope versioned, result ซ้ำ idempotent, SHA/attempt/card mismatch ถูก reject
 T41 adapter เดียวรัน fake Codex/Claude providers ด้วย envelope/result contract เดียว; เปลี่ยน provider กลาง attempt ถูก reject
 T42 GitHub authoritative count ถูกใช้; API ล่ม+cache สดใช้ max(cache,local); cache เก่าหรือไม่มี cache → exit 8 และไม่ claim ใหม่
-T43 LINEAR_API_TOKEN อ่านจาก process env หรือ strict --env-file เท่านั้น; shell syntax ไม่ execute, unsafe owner/mode ถูก reject และ token ไม่รั่วใน plist/log/output
+T43 LINEAR_API_TOKEN อ่านจาก strict `~/.env`/`--env-file` (authoritative เหนือ ambient env) หรือ process env เท่านั้น; shell syntax ไม่ execute, unsafe owner/mode ถูก reject และ token ไม่รั่วใน plist/log/output
 ```
 
 ---

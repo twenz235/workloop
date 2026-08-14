@@ -48,36 +48,35 @@ printf 'LINEAR_API_TOKEN=lin_api_xxx\n' > ~/.env
 chmod 600 ~/.env
 ```
 
-Initialize a repository using the workspace name/UUID and team key/UUID shown by Linear:
+Initialize from inside the target repository:
 
 ```bash
-loopctl init \
-  --project acme-app \
-  --repo-path /Users/alice/src/acme-app \
-  --state-root /Users/alice/.workloop/acme-app \
-  --linear-workspace Acme \
-  --linear-workspace-id 00000000-0000-4000-8000-000000000001 \
-  --linear-team ENG \
-  --linear-team-id 00000000-0000-4000-8000-000000000002 \
-  --env-file /Users/alice/.env
+cd /Users/alice/src/acme-app
+loopctl init
 ```
 
-Start in the foreground:
+Workloop derives the Git root, project name, `<repo>/.loopctl` state root, and Linear workspace automatically. It loads `~/.env` and locally excludes `.loopctl` through `.git/info/exclude`. If the workspace has multiple teams, select one discovered key:
 
 ```bash
-loopctl start --state-root /Users/alice/.workloop/acme-app --env-file /Users/alice/.env
+loopctl init --linear-team ENG
+```
+
+All former flags remain available as explicit overrides. Start in the foreground:
+
+```bash
+loopctl start
 ```
 
 Or install the idempotent macOS user LaunchAgent:
 
 ```bash
-loopctl startup enable --state-root /Users/alice/.workloop/acme-app
+loopctl startup enable
 ```
 
 Startup performs an immediate sync and then polls every 300 seconds by default. Change the interval within 60–3600 seconds:
 
 ```bash
-loopctl config set linear.sync_interval_sec 300 --state-root "$STATE_ROOT"
+loopctl config set linear.sync_interval_sec 300
 ```
 
 ## Grooming
@@ -87,19 +86,19 @@ The included `groom` skill clarifies a request, scopes it, previews a complete c
 ## Operations
 
 ```bash
-loopctl status --role dev --state-root "$STATE_ROOT"
-loopctl status --role qa --state-root "$STATE_ROOT"
-loopctl list --state-root "$STATE_ROOT"
-loopctl doctor --state-root "$STATE_ROOT"
-loopctl stop --state-root "$STATE_ROOT"
-loopctl restart --state-root "$STATE_ROOT" --env-file ~/.env
+loopctl status --role dev
+loopctl status --role qa
+loopctl list
+loopctl doctor
+loopctl stop
+loopctl restart
 ```
 
 Cards requiring a human decision remain in `needs_attention` until explicitly resolved:
 
 ```bash
 loopctl resolve eng-123 --to rework --by human/alice \
-  --note "The updated requirement is approved" --state-root "$STATE_ROOT"
+  --note "The updated requirement is approved"
 ```
 
 Never edit queue files manually or move a card directly to Done. Only QA merge followed by a verified `sync-done` can complete work.
