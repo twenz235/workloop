@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -69,6 +70,83 @@ func addTestCard(t *testing.T, s *State, id string, touches []string) {
 	}
 }
 
+func TestOpenMigratesLegacyQueueToFlatRuntimeStore(t *testing.T) {
+	s := testState(t)
+	var raw map[string]any
+	if err := json.Unmarshal(testCard("legacy", []string{"legacy.go"}), &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["repo"] = s.Config.Repo
+	raw["repo_path"] = s.Config.RepoPath
+	raw["status"] = "cancelled"
+	b, _ := json.Marshal(raw)
+	legacyDir := filepath.Join(s.Root, "queue", "cancelled")
+	if err := os.MkdirAll(legacyDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "legacy.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.FS.Close()
+	migrated, err := Open(s.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = migrated.FS.Close() })
+	if _, err := os.Stat(filepath.Join(s.Root, "queue")); !os.IsNotExist(err) {
+		t.Fatalf("legacy queue remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.Root, "cards", "legacy.json")); err != nil {
+		t.Fatalf("canonical card missing: %v", err)
+	}
+	if phase, _, err := migrated.Locate("legacy"); err != nil || phase != "cancelled" {
+		t.Fatalf("phase=%q err=%v", phase, err)
+	}
+	archived, err := os.ReadFile(filepath.Join(s.Root, "runtime", "legacy", "legacy.json"))
+	if err != nil || !strings.Contains(string(archived), `"status":"cancelled"`) {
+		t.Fatalf("recoverable archive missing legacy status: err=%v data=%s", err, archived)
+	}
+	canonical, err := os.ReadFile(filepath.Join(s.Root, "cards", "legacy.json"))
+	if err != nil || strings.Contains(string(canonical), `"status"`) {
+		t.Fatalf("canonical snapshot contains local status: err=%v data=%s", err, canonical)
+	}
+}
+
+func TestLinearDependencySnapshotAllowsExternalDependency(t *testing.T) {
+	s := testState(t)
+	dep := "dependency-uuid"
+	if err := s.updateLinearRuntime(func(runtime *linearRuntime) {
+		runtime.IssueStates = map[string]string{dep: "Backlog"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.Config.Linear.Enabled = true
+	var raw map[string]any
+	if err := json.Unmarshal(testCard("external-dep", []string{"external.go"}), &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["repo"] = s.Config.Repo
+	raw["repo_path"] = s.Config.RepoPath
+	raw["depends_on"] = []string{dep}
+	raw["linear_state"] = "Todo"
+	raw["linear_labels"] = []string{"loop:ready", "type:feature"}
+	b, _ := json.Marshal(raw)
+	if _, err := s.Add(b, "system/sync"); err != nil {
+		t.Fatalf("external Linear dependency should be importable: %v", err)
+	}
+	if s.dependenciesDone(&Card{DependsOn: []string{dep}}) {
+		t.Fatalf("Backlog dependency was treated as done")
+	}
+	if err := s.updateLinearRuntime(func(runtime *linearRuntime) {
+		runtime.IssueStates[dep] = "Done"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !s.dependenciesDone(&Card{DependsOn: []string{dep}}) {
+		t.Fatalf("Done dependency was not recognized from Linear snapshot")
+	}
+}
+
 func TestContractHashPreservesCardsWithoutVisuals(t *testing.T) {
 	var raw map[string]any
 	if err := json.Unmarshal(testCard("hash", []string{"a.go"}), &raw); err != nil {
@@ -88,7 +166,7 @@ func TestContractHashPreservesCardsWithoutVisuals(t *testing.T) {
 	}
 }
 
-func TestListUsesLinearBoardStatusAndKeepsRuntimeStatusSeparate(t *testing.T) {
+func TestListUsesLinearBoardStatusWithoutLocalWorkflowStatus(t *testing.T) {
 	s := testState(t)
 	addTestCard(t, s, "board", []string{"src/board.go"})
 	if _, err := s.PatchInternal("board", map[string]any{"linear_state": "In Review", "linear_labels": []string{"loop:ready", "type:feature"}}, "Linear snapshot"); err != nil {
@@ -98,8 +176,11 @@ func TestListUsesLinearBoardStatusAndKeepsRuntimeStatusSeparate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0]["status"] != "In Review" || items[0]["runtime_status"] != "todo" {
+	if len(items) != 1 || items[0]["status"] != "In Review" {
 		t.Fatalf("items=%v", items)
+	}
+	if _, exists := items[0]["runtime_status"]; exists {
+		t.Fatalf("local workflow status leaked into list: %v", items[0])
 	}
 }
 

@@ -235,6 +235,9 @@ func parseLoopCard(issue linearIssue, cfg *Config) ([]byte, error) {
 	if err := json.Unmarshal([]byte(m[1]), &raw); err != nil {
 		return nil, E(2, "%s loop-card is invalid: %v", issue.Identifier, err)
 	}
+	// Workflow status is owned by Linear. Never persist a legacy/local status
+	// field from a hand-authored card block into the canonical snapshot.
+	delete(raw, "status")
 	raw["id"] = deriveCardID(issue.Identifier, issue.ID)
 	raw["title"] = issue.Title
 	raw["linear_issue_id"] = issue.Identifier
@@ -311,8 +314,9 @@ func containsString(xs []string, want string) bool {
 }
 
 type linearRuntime struct {
-	Outbox     []linearAction `json:"outbox"`
-	LastSyncAt string         `json:"last_sync_at,omitempty"`
+	Outbox      []linearAction    `json:"outbox"`
+	IssueStates map[string]string `json:"issue_states,omitempty"`
+	LastSyncAt  string            `json:"last_sync_at,omitempty"`
 }
 type linearAction struct {
 	IssueID   string `json:"issue_id"`
@@ -467,6 +471,14 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 		return nil, E(8, "Linear sync failed: %v", err)
 	}
 	issues = orderLinearIssuesByDependencies(issues)
+	issueStates := map[string]string{}
+	for _, issue := range issues {
+		issueStates[issue.ID] = issue.StateName
+	}
+	runtime.IssueStates = issueStates
+	if err := s.saveLinearRuntime(runtime); err != nil {
+		return nil, err
+	}
 	imported := []string{}
 	updated := []string{}
 	attention := []string{}
@@ -477,7 +489,10 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 		return nil, E(8, "Linear status lookup failed: %v", err)
 	}
 	for _, issue := range issues {
-		cards, _ := s.AllCards()
+		cards, cardsErr := s.AllCards()
+		if cardsErr != nil {
+			return nil, cardsErr
+		}
 		var existing *struct {
 			Status, Path string
 			Raw          map[string]any
@@ -504,16 +519,28 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 					updated = appendUniqueIdentifier(updated, issue.Identifier)
 				}
 			}
-			if existing.Status == "done" || existing.Status == "cancelled" {
+			if existing.Status == "done" {
 				continue
 			}
 			ready := containsString(issue.Labels, s.Config.Linear.ReadyLabel)
 			isCancelled := issue.StateName == "Canceled" || issue.StateName == "Cancelled" || issue.StateName == "Duplicate"
-			if existing.Status == "needs_attention" && ready && !containsString(issue.Labels, s.Config.Linear.NeedsAttentionLabel) {
-				runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "attention"})
+			needsAttention := containsString(issue.Labels, s.Config.Linear.NeedsAttentionLabel)
+			if ready && !isCancelled && !needsAttention {
+				to := s.linearRuntimePhase(issue.StateName)
+				// A live worker lease is private runtime state and must not be
+				// interrupted by a stale or human-edited Linear snapshot. Every
+				// other phase follows the current Linear state, including a card
+				// reopened from a historical cancelled/attention phase.
+				if to != "" && !runtimePhaseActive(existing.Status) && existing.Status != "done" && existing.Status != to {
+					if _, reopenErr := s.withMoveInternal(existing.Card.ID, to, "system/sync", "Linear issue is approved again", map[string]any{"claimed_at": nil, "claimed_by": nil, "spec_changed": false}); reopenErr == nil {
+						existing.Status = to
+						existing.Card.Status = to
+						updated = appendUniqueIdentifier(updated, issue.Identifier)
+					}
+				}
 			}
-			if existing.Status != "needs_attention" && containsString(issue.Labels, s.Config.Linear.NeedsAttentionLabel) {
-				runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "attention-remove"})
+			if ready && !isCancelled && issue.StateName == s.Config.Linear.StatusMap["backlog"] {
+				runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, StateID: todoState, StateName: s.Config.Linear.StatusMap["todo"], Kind: "state"})
 			}
 			if !ready || isCancelled {
 				to, e := s.syncCancellation(existing.Card.ID)
@@ -531,7 +558,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 				newRaw, newCard, _ := DecodeCard(data, &s.Config)
 				if newCard.ContractHash != existing.Card.ContractHash {
 					if existing.Status == "todo" || existing.Status == "blocked" {
-						if e := validateDependencies(newCard, cards); e != nil {
+						if e := validateDependenciesWithExternal(newCard, cards, mapKeys(issueStates)); e != nil {
 							if _, moveErr := s.withMoveInternal(existing.Card.ID, "needs_attention", "system/sync", e.Error(), map[string]any{"spec_changed": true}); moveErr == nil {
 								attention = append(attention, issue.Identifier)
 							}
@@ -563,7 +590,9 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 			}
 			continue
 		}
-		if issue.StateName != s.Config.Linear.StatusMap["backlog"] || !containsString(issue.Labels, s.Config.Linear.ReadyLabel) {
+		ready := containsString(issue.Labels, s.Config.Linear.ReadyLabel)
+		isCancelled := issue.StateName == "Canceled" || issue.StateName == "Cancelled" || issue.StateName == "Duplicate"
+		if !ready || isCancelled || issue.StateName == s.Config.Linear.StatusMap["done"] {
 			continue
 		}
 		data, e := parseLoopCard(issue, &s.Config)
@@ -606,10 +635,18 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 			continue
 		}
 		imported = append(imported, issue.Identifier)
-		if e = client.updateState(ctx, issue.ID, todoState); e != nil {
-			runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, StateID: todoState, StateName: s.Config.Linear.StatusMap["todo"], Kind: "state"})
-		} else {
-			_ = s.applyLinearActionSnapshot(linearAction{IssueID: issue.ID, StateName: s.Config.Linear.StatusMap["todo"], Kind: "state"})
+		if phase := s.linearRuntimePhase(issue.StateName); phase != "" && phase != "todo" {
+			if _, moveErr := s.withMoveInternal(c.ID, phase, "system/sync", "Imported from Linear runtime state", map[string]any{"claimed_at": nil, "claimed_by": nil}); moveErr != nil {
+				rejected[issue.Identifier] = moveErr.Error()
+				continue
+			}
+		}
+		if issue.StateName == s.Config.Linear.StatusMap["backlog"] {
+			if e = client.updateState(ctx, issue.ID, todoState); e != nil {
+				runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, StateID: todoState, StateName: s.Config.Linear.StatusMap["todo"], Kind: "state"})
+			} else {
+				_ = s.applyLinearActionSnapshot(linearAction{IssueID: issue.ID, StateName: s.Config.Linear.StatusMap["todo"], Kind: "state"})
+			}
 		}
 	}
 	runtime.LastSyncAt = Now()
@@ -639,6 +676,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 			}
 		}
 		current.Outbox = merged
+		current.IssueStates = issueStates
 		current.LastSyncAt = runtime.LastSyncAt
 	}); err != nil {
 		return nil, err
@@ -646,6 +684,15 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 	final, err := s.loadLinearRuntime()
 	if err != nil {
 		return nil, err
+	}
+	if len(final.Outbox) > 0 {
+		if _, flushErr := s.flushLinearOutbox(ctx, client); flushErr != nil {
+			return nil, flushErr
+		}
+		final, err = s.loadLinearRuntime()
+		if err != nil {
+			return nil, err
+		}
 	}
 	return map[string]any{"imported": imported, "updated": updated, "needs_attention": attention, "cancelled": cancelled, "rejected": rejected, "pending": len(final.Outbox)}, nil
 }
@@ -665,6 +712,7 @@ func (s *State) syncLinearParent(id, parentID, revision string) (bool, error) {
 		} else {
 			raw["linear_parent_id"] = parentID
 		}
+		delete(raw, "status")
 		raw["source_revision"] = revision
 		encoded, err := Encode(raw)
 		if err != nil {
@@ -696,6 +744,7 @@ func (s *State) syncLinearMetadata(id string, issue linearIssue) (bool, error) {
 		raw["linear_state"] = issue.StateName
 		raw["linear_labels"] = labels
 		raw["linear_updated_at"] = issue.UpdatedAt
+		delete(raw, "status")
 		encoded, err := Encode(raw)
 		if err != nil {
 			return err
@@ -748,6 +797,7 @@ func (s *State) applyLinearActionSnapshot(action linearAction) error {
 				return nil
 			}
 			raw := item.Raw
+			delete(raw, "status")
 			raw["linear_state"] = stateName
 			raw["linear_labels"] = labels
 			raw["linear_updated_at"] = ""
@@ -796,6 +846,44 @@ func appendUniqueIdentifier(values []string, identifier string) []string {
 		return values
 	}
 	return append(values, identifier)
+}
+
+func mapKeys(values map[string]string) map[string]bool {
+	out := make(map[string]bool, len(values))
+	for key := range values {
+		out[key] = true
+	}
+	return out
+}
+
+func (s *State) linearRuntimePhase(state string) string {
+	switch state {
+	case s.Config.Linear.StatusMap["backlog"], s.Config.Linear.StatusMap["todo"]:
+		return "todo"
+	case s.Config.Linear.StatusMap["in_progress"]:
+		return "rework"
+	case s.Config.Linear.StatusMap["in_review"]:
+		return "in_review"
+	default:
+		return ""
+	}
+}
+
+func (s *State) linearExecutionPhase(state string) string {
+	if phase := s.linearRuntimePhase(state); phase != "" {
+		return phase
+	}
+	if state == s.Config.Linear.StatusMap["done"] {
+		return "done"
+	}
+	if state == "Canceled" || state == "Cancelled" || state == "Duplicate" {
+		return "cancelled"
+	}
+	return ""
+}
+
+func runtimePhaseActive(phase string) bool {
+	return phase == "claimed-dev" || phase == "claimed-qa"
 }
 
 func (s *State) syncCancellation(id string) (string, error) {
@@ -854,7 +942,7 @@ func (s *State) syncContractChange(id string, patch map[string]any, revision str
 }
 
 func (s *State) enqueueLinear(card *Card, from, status string) error {
-	if card.LinearIssueUUID == "" {
+	if !s.Config.Linear.Enabled || card.LinearIssueUUID == "" {
 		return nil
 	}
 	kind, stateName := "state", ""

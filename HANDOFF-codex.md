@@ -3,13 +3,20 @@
 > เอกสารส่งต่อสำหรับผู้ implement (Codex). อ่านจบแล้วต้องลงมือได้โดยไม่ต้องเดา
 > ถ้ามีอะไรในสเปคนี้ขัดกันเอง หรือต้องตัดสินใจเชิงออกแบบที่สเปคไม่ได้ระบุ — **หยุดแล้วถาม อย่าเดาแล้วเดินต่อ**
 
-**Version:** 1.2 · **วันที่:** 2026-08-14 · **สถานะ:** implementation-ready สำหรับ M0–M8
+**Version:** 1.3 · **วันที่:** 2026-08-14 · **สถานะ:** implementation-ready สำหรับ M0–M8
+
+> **Current implementation note:** card workflow state is not stored in local
+> status folders. `cards/` is the flat canonical snapshot store and
+> `runtime/execution/` is private lease/recovery data. `Open` migrates a legacy
+> `queue/<status>/` layout automatically and keeps a recoverable archive under
+> `runtime/legacy/`. Linear state/labels remain authoritative for board display
+> and claim eligibility.
 
 ---
 
 ## 0. TL;DR สำหรับคนที่จะลงมือ
 
-สร้างระบบรับงานจาก Linear และคิว execution บน filesystem ให้ AI agent 2 กลุ่ม (dev / qa) ซึ่งอยู่**คนละ process และมองไม่เห็นกัน** ทำงานร่วมกันโดยไม่ชนกัน. Linear เป็น source of truth ของ requirement/priority/การอนุมัติ ส่วน filesystem เป็น source of truth ของ claim/retry/recovery
+สร้างระบบรับงานจาก Linear ให้ AI agent 2 กลุ่ม (dev / qa) ซึ่งอยู่**คนละ process และมองไม่เห็นกัน** ทำงานร่วมกันโดยไม่ชนกัน. Linear เป็น source of truth จริงของ requirement/priority/การอนุมัติ/labels/project/parent-child/board state และ eligibility; filesystem เก็บเฉพาะ card snapshot กับ claim/lease/retry/recovery ที่เป็นข้อมูลรันไทม์ส่วนตัว ไม่ใช่กระดานหรือ workflow source of truth
 
 **สิ่งที่ต้องส่งมอบคือ CLI ชื่อ `loopctl` และ skill `/groom`**. `/groom` เปลี่ยนโจทย์ภาษาคนเป็น Linear issue ที่ผ่าน Definition of Ready; `loopctl` sync issue ที่อนุมัติแล้วเข้าคิวและห่อ operation ที่ต้องแม่นยำ (claim / move / conflict detection / reconcile / Linear sync) พร้อมเทส concurrency และ failure recovery
 
@@ -43,10 +50,10 @@
 |---|---|
 | **card** | ใบงาน 1 ใบ = ไฟล์ JSON 1 ไฟล์ |
 | **board status** | สถานะที่คนเห็นบนกระดาน = **Linear state** ที่ sync ล่าสุดยืนยัน |
-| **runtime status** | สถานะภายใน = ชื่อโฟลเดอร์ local ที่ใช้ claim/lease/retry/recovery; ไม่ใช่กระดานที่สอง |
+| **runtime phase** | phase การทำงานภายในที่เก็บแยกจาก card (`runtime/execution/<id>.json`) เพื่อ lease/retry/recovery; ไม่ใช่ Linear state และไม่ใช่กระดาน |
 | **role** | `dev` หรือ `qa` — สอง orchestrator ที่รันคนละ process |
 | **worker** | agent ลูกที่ทำการ์ด 1 ใบ (dev worker เขียนโค้ด, qa worker ตรวจ) |
-| **claim** | การจองการ์ดภายใน queue transaction แล้วเปลี่ยน authoritative location เข้าโฟลเดอร์ claim |
+| **claim** | การจอง card ใน transaction แล้วบันทึก execution phase/lease ใน local runtime พร้อม mirror lifecycle ที่ตั้งใจไป Linear |
 | **touches** | รายการ glob ของไฟล์ที่การ์ดจะแก้ — ใช้เป็น**กุญแจล็อก**ของ scheduler |
 | **conflict-free** | การ์ดที่ `touches` ไม่ตัดกับการ์ดที่กำลังรันอยู่ทุกใบ |
 | **in-flight** | การ์ดที่อยู่ระหว่าง `claimed-dev` / `in_review` / `claimed-qa` |
@@ -60,20 +67,20 @@
 
 อ่านสองข้อนี้ให้เข้าใจก่อนเขียนโค้ดบรรทัดแรก — ที่เหลือทั้งหมดเป็นแค่รายละเอียดของสองข้อนี้
 
-### 3.1 Ownership by location
-แต่ละโฟลเดอร์สถานะมี **เจ้าของ role เดียว** ที่มีสิทธิ์หยิบการ์ดออกและแก้เนื้อใน. location ระบุ ownership ส่วน queue transaction lock ป้องกัน writer หลาย process ภายใน role เดียวกันและ operation ข้าม role
+### 3.1 Linear ownership + private runtime
+Linear เป็นเจ้าของสถานะ workflow ทั้งหมดที่คนเห็นและใช้ตัดสินว่างานพร้อมรับหรือไม่. local มี card snapshot แบบ flat และ execution phase แยกไฟล์สำหรับ lease/reservation/attempt/recovery เท่านั้น; ห้ามใช้ phase นี้แทน Linear หรือทำให้ issue ที่ Linear เปิดกลับมา claim ไม่ได้
 
 ### 3.1.1 One state = one repo
-หนึ่ง `STATE_ROOT` ผูกกับ repository เดียวแบบ immutable ตั้งแต่ `init` โดยเก็บ canonical `repo_path`, Git remote identity และ Linear team binding. ทุก card ใน state ต้องมี repo/base ตรง config; mismatch ให้ exit 2. ถ้าจะทำงานอีก repo ต้อง `init` state root ใหม่ ห้ามแชร์ queue/reservation/worktree ข้าม repo
+หนึ่ง `STATE_ROOT` ผูกกับ repository เดียวแบบ immutable ตั้งแต่ `init` โดยเก็บ canonical `repo_path`, Git remote identity และ Linear team binding. ทุก card ใน state ต้องมี repo/base ตรง config; mismatch ให้ exit 2. ถ้าจะทำงานอีก repo ต้อง `init` state root ใหม่ ห้ามแชร์ card snapshot/reservation/worktree ข้าม repo
 
-### 3.2 Queue transaction + claim
-การตรวจ conflict/hot/backpressure และการ claim ต้องอยู่ใน **critical section เดียวกัน** ต่อ `STATE_ROOT`; การใช้ `os.Link()` อย่างเดียวป้องกันได้เฉพาะการแย่ง card id เดียว แต่ป้องกันสอง process หยิบคนละ card ที่ `touches` ทับกันไม่ได้
+### 3.2 Runtime transaction + claim
+การตรวจ conflict/hot/backpressure และการ claim ต้องอยู่ใน **critical section เดียวกัน** ต่อ `STATE_ROOT`; card snapshot ไม่ย้ายข้าม status folder อีกต่อไป การอัปเดตเนื้อหาใช้ transaction เดียวกับการบันทึก execution phase และ reservation
 
 ใช้ advisory file lock อายุสั้นด้วย `syscall.Flock(LOCK_EX)` บน file descriptor ของ `runtime/queue.lock` ครอบเฉพาะ `read state → validate → select → transition → journal`. ห้ามถือ lock ระหว่าง network/Git/worker ทำงาน; เตรียม external facts ก่อนเข้า lock แล้ว revalidate state ภายใน lock. process ตายแล้ว kernel ปล่อย lock ให้เอง และทุกคำสั่งที่เปลี่ยน queue ต้องใช้ protocol เดียวกัน
 
-ทุก transition ต้องมี durable intent ที่ `runtime/transactions/<tx-id>.json` ก่อนแตะ queue. Intent เก็บ `card_id`, source, destination, hash ของเนื้อหาใหม่, operation, actor และ phase (`prepared|destination-created|source-removed|committed`). เขียน temp/intent แล้ว `fsync` ไฟล์และ parent directory ก่อนเดิน phase ถัดไป
+ทุกการเขียน card/phase ต้องมี durable intent ที่ `runtime/transactions/<tx-id>.json` ก่อนแตะ snapshot. Intent เก็บ `card_id`, destination, hash ของเนื้อหาใหม่, operation, actor, `runtime_phase` และ phase (`prepared|destination-created|source-removed|committed`). เขียน temp/intent แล้ว `fsync` ไฟล์และ parent directory ก่อนเดิน phase ถัดไป
 
-ภายใน transaction ใช้ `Root.Link()` + `Root.Remove()` เพื่อสร้าง destination แบบไม่ overwrite:
+การสร้าง card ใหม่ภายใน transaction ใช้ `Root.Link()` + `Root.Remove()` เพื่อสร้าง destination แบบไม่ overwrite:
 ```go
 err := root.Link(src, dst)      // ปลายทางมีอยู่แล้ว → error ที่ os.IsExist(err) == true
 if err != nil { /* แพ้การแย่ง */ }
@@ -100,23 +107,17 @@ err = root.Remove(src)          // link สำเร็จแล้วค่อ�
 <STATE_ROOT>/                      # default: <git-root>/.loopctl/
 ├── config.json
 ├── STOP                           # มีไฟล์นี้ = ทุก role หยุดใน tick ถัดไป
-├── queue/
-│   ├── .tmp/                      # เขียนที่นี่ก่อน rename เสมอ
-│   ├── todo/                      # Linear sync/add สร้าง · dev หยิบ
-│   ├── rework/                    # qa ใส่ · dev หยิบ (ก่อน todo เสมอ)
-│   ├── claimed-dev/               # dev เจ้าของเต็ม
-│   ├── in_review/                 # dev ใส่ · qa หยิบ
-│   ├── claimed-qa/                # qa เจ้าของเต็ม
-│   ├── needs_attention/           # ทั้งคู่ใส่ได้ · คนมาดู
-│   ├── blocked/                   # รอ depends_on (L3 ถูกปฏิเสธก่อนเข้าคิว)
-│   ├── cancelled/                 # คนยกเลิก; terminal แต่ไม่ใช่ done
-│   └── done/                      # merged แล้ว
+├── cards/                         # canonical snapshots; ไม่มี workflow status
+│   └── <card-id>.json
 ├── journal/
 │   ├── dev.md                     # append-only
 │   ├── qa.md                      # append-only
 │   └── workers/<card-id>/         # attempt logs + atomic result JSON
 └── runtime/
-    ├── queue.lock                 # advisory lock อายุสั้น
+    ├── execution/<card-id>.json   # private runtime phase + timestamp
+    ├── legacy/<card-id>.json      # recoverable archive จาก migration ครั้งเดียว
+    ├── legacy-manifest.json       # legacy phase → card id สำหรับ audit
+    ├── queue.lock                 # advisory lock อายุสั้น (ชื่อเดิมเพื่อ compatibility)
     ├── transactions/              # durable transition intents/receipts
     ├── reservations/              # touches reservations จน PR merge/close
     ├── supervisor.json            # pid/start/config ของ loopctl start
@@ -129,15 +130,11 @@ err = root.Remove(src)          // link สำเร็จแล้วค่อ�
 
 | path | dev | qa | groom | คน |
 |---|---|---|---|---|
-| `todo/` | อ่าน, หยิบออก | — | — | อ่าน |
-| `rework/` | อ่าน, หยิบออก | ใส่เข้า | — | อ่าน |
-| `claimed-dev/` | **เจ้าของเต็ม** | — | — | อ่าน |
-| `in_review/` | ใส่เข้า | อ่าน, หยิบออก | — | อ่าน |
-| `claimed-qa/` | — | **เจ้าของเต็ม** | — | อ่าน |
-| `needs_attention/` | ใส่เข้า | ใส่เข้า | — | หยิบออก |
-| `blocked/` | ใส่/auto-unblock | — | — | resolve/cancel |
-| `cancelled/` | — | — | — | ใส่ผ่าน `resolve` |
-| `done/` | — | ใส่ผ่าน `sync-done` | — | อ่าน |
+| `cards/` | อ่าน/แก้ผ่าน transaction | อ่าน/แก้ผ่าน transaction | — | อ่าน |
+| `runtime/execution/` | claim/lease ของตน | claim/lease ของตน | — | อ่าน |
+| `runtime/reservations/` | สร้าง/ปล่อยตาม protocol | อ่าน | — | อ่าน |
+| `runtime/transactions/` | protocol เดียวกัน | protocol เดียวกัน | — | doctor เท่านั้น |
+| `runtime/legacy/` | — | — | — | อ่าน/กู้คืน |
 | `journal/dev.md` | **append** | — | — | อ่าน |
 | `journal/qa.md` | — | **append** | — | อ่าน |
 | `runtime/dev.json` | **เจ้าของเต็ม** | อ่านอย่างเดียว | — | อ่าน |
@@ -186,8 +183,8 @@ err = root.Remove(src)          // link สำเร็จแล้วค่อ�
   "approved_at": "2026-08-13T10:01:00+07:00",
   "approved_by": "linear-user-id",
 
-  // --- ระบบจัดการเอง ---
-  "status": "todo",                    // runtime status ภายใน; board status อยู่ใน Linear
+  // --- snapshot/runtime fields (ไม่รวม workflow status) ---
+  // execution phase อยู่แยกที่ runtime/execution/<id>.json
   "hot": false,                        // คำนวณจาก config.hot_paths ตอน add
   "attempts": 0,
   "max_attempts": 2,
@@ -406,11 +403,11 @@ func PatternsOverlap(a, b []string) bool
 sync Linear แบบมีขอบเขต team/project ที่ config อนุญาต:
 1. อ่านเฉพาะ issue ใน Backlog ที่มี `loop:ready`
 2. parse `loop-card`, validate DoR/schema/dependency และตรวจ UUID ซ้ำทั้งระบบ
-3. สร้าง internal local card ใน `todo` ก่อน แล้วจึงย้าย Linear เป็น Todo; ถ้าขั้นหลัง fail ให้บันทึก pending outbound action และ retry โดยไม่สร้าง card ซ้ำ
-4. เก็บ snapshot ของ Linear state/labels/updatedAt ใน card เพื่อให้ `list`/`status` แสดงกระดานจาก Linear; local runtime fields ใช้เฉพาะ scheduler และ recovery
-5. อัปเดตสถานะ/PR/finding summary จาก local ไป Linear โดยไม่ทับ requirement ฝั่งคน และ flush outbound state/label action ทันทีหลัง transition เมื่อทำได้
+3. สร้าง canonical card snapshot ใน `cards/<id>.json` และ phase `todo` ใน `runtime/execution/<id>.json`; ไม่มีการสร้างหรือย้ายไฟล์ข้าม `queue/<status>` อีกต่อไป
+4. เก็บ snapshot ของ Linear state/labels/updatedAt ใน card เพื่อให้ `list`/`status` แสดงกระดานจาก Linear; local execution phase ใช้เฉพาะ scheduler และ recovery
+5. lifecycle transition ที่เกิดจาก worker/QA โดยตั้งใจจึงค่อยส่ง outbound state/label ไป Linear; sync ที่อ่าน Linear ห้ามเขียน Linear กลับเพื่อยืนยัน local phase และ flush action ที่ค้างทันทีเมื่อทำได้
 6. คำนวณ `contract_hash`: ถ้าเปลี่ยนก่อน claimให้อัปเดต local cardหลัง validate; ถ้าเปลี่ยนตั้งแต่ `claimed-dev` เป็นต้นไป ให้ `spec_changed=true`, หยุด transition อัตโนมัติ และส่ง `needs_attention`. `updatedAt` เปลี่ยนอย่างเดียวไม่ถือว่า spec เปลี่ยน
-7. ถ้า issue ถูก cancel/archive หรือลบ `loop:ready`: ก่อน claim ให้ย้าย local card ไป `cancelled` เพื่อคง audit trail; หลัง claim ให้ mark `needs_attention` และหยุดที่ safe point
+7. ถ้า issue ถูก cancel/archive หรือลบ `loop:ready`: ก่อน claim ให้บันทึก execution phase `cancelled` เพื่อคง audit trail; หลัง claim ให้ mark `needs_attention` และหยุดที่ safe point. ถ้า Linear กลับมาเป็น Backlog/Todo + `loop:ready` ให้ rehydrate phase กลับมา claimable อัตโนมัติ
 8. Linear ล่มให้ exit 8, ทำงาน local ที่ claim ไปแล้วต่อได้ แต่ห้าม claim งานใหม่ที่ต้องพึ่ง state/approval จาก Linear; board snapshot ต้องรายงานว่าอาจ stale
 
 sync ต้อง idempotent ด้วย `linear_issue_uuid` และ durable outbox ใน `runtime/linear.json`; polling ทันทีตอน start และทุก `linear.sync_interval_sec` (default 300)
@@ -420,10 +417,10 @@ sync ต้อง idempotent ด้วย `linear_issue_uuid` และ durable 
 - validate ครบทุก required field + `id` ต้องไม่ซ้ำกับการ์ดใดในระบบ (สแกนทุกโฟลเดอร์)
 - **ปฏิเสธ `tier: "L3"`** → exit 2 พร้อมข้อความว่าให้ไป escalate ที่คน
 - คำนวณ `hot` จาก `config.hot_paths`
-- ใช้ queue lock + durable transaction intent: เขียน `.tmp/`, fsync, สร้าง destination แบบ no-overwrite แล้ว commit เข้า `todo/` — **ห้ามเขียนตรงเข้า `todo/`**
+- ใช้ queue lock + durable transaction intent: เขียน `cards/.tmp/`, fsync, สร้าง canonical snapshot แบบ no-overwrite แล้วบันทึก execution phase `todo` — **ห้ามสร้าง local status folder**
 
 #### `loopctl list [--status STATUS] [--linear ID]`
-คืน card summary แบบ deterministic (id, title, Linear board status, labels, priority, Linear URL, PR, flags) เรียง priority แล้ว created time; `runtime_status` ให้เป็น diagnostic-only และไม่ถือเป็น board status; ไม่แก้ state และห้ามดึง comment/source ที่ไม่จำเป็น
+คืน card summary แบบ deterministic (id, title, Linear board status, labels, priority, Linear URL, PR, flags) เรียง priority แล้ว created time; ห้ามคืน local execution phase เป็น field ของกระดาน; ไม่แก้ state และห้ามดึง comment/source ที่ไม่จำเป็น
 
 #### `loopctl claim --role dev|qa --worker ID`
 หัวใจของระบบ. ทำตามลำดับนี้เป๊ะ ๆ:
@@ -433,38 +430,38 @@ sync ต้อง idempotent ด้วย `linear_issue_uuid` และ durable 
    - เก็บผลสำเร็จล่าสุดเป็น local cache พร้อม `fetched_at`, repo, base, PR IDs/head SHAs และ count
    - ถ้า GitHub ใช้ไม่ได้ ใช้ cache ได้เฉพาะเมื่ออายุไม่เกิน `github.open_pr_cache_max_age_sec`; เพื่อลดความเสี่ยง undercount ให้ใช้ `max(cached_count, local active cards ที่มี open/unknown PR)`
    - cache หมดอายุหรือไม่เคยมี → fail closed ด้วย exit 8 ห้าม claim Dev ใหม่; Dev/QA ที่ claim แล้วทำต่อได้
-3. รวบรวมการ์ดผู้สมัคร:
-   - `dev`: `rework/` ก่อน แล้วค่อย `todo/` — **ลำดับนี้ห้ามสลับ**
-   - `qa`: `in_review/`
-4. ก่อนเลือก ให้ย้ายการ์ด `blocked/` ที่ dependency อยู่ `done/` ครบกลับ `todo/` อัตโนมัติใน transaction เดียว; dependency ที่ยังไม่ครบให้คง/ย้าย `blocked` พร้อมเหตุผล
+3. รวบรวมการ์ดผู้สมัครจาก card snapshots โดยอ่าน Linear state/labels เป็นหลัก:
+   - `dev`: Linear `In Progress` (rework) ก่อน แล้ว `Todo`
+   - `qa`: Linear `In Review`
+4. dependency readiness อ่านจาก Linear state ของ dependency; ไม่สร้างหรือย้าย local `blocked/` folder. execution phase เป็นเพียง diagnostic/recovery bookkeeping
 5. **เฉพาะ role `dev`** — กรอง conflict:
    - อ่าน `touches` จาก reservation ทั้งหมดที่ยังไม่ released ไม่ใช่เฉพาะ `claimed-dev/`; ตอน claim rework ให้ไม่นับ reservation ของ card ตัวเอง แต่ยังต้องชนกับ card อื่นตามปกติ
    - การ์ดที่ `touches` ตัดกัน (glob match ทั้งสองทาง) → ข้าม + `conflict_skips++`
    - การ์ดที่ `hot=true` → dispatch ได้เฉพาะเมื่อไม่มี active reservation ของ card อื่น; เมื่อ hot reservation active ห้าม dispatch การ์ดอื่น แต่ owner card กลับเข้า rework ได้
    - การ์ดที่ `conflict_skips ≥ conflict_skip_boost` → เลื่อนขึ้นหน้าสุดของรอบถัดไป
-6. Dev claim ต้องสร้าง durable reservation ก่อนเปลี่ยน location. Reservation คงอยู่ผ่าน `claimed-dev`, `in_review`, `claimed-qa`, `rework` และ `needs_attention` ที่ยังมี PR/branch เปิด; release เฉพาะ merge สำเร็จ, PR/branch ปิดหรือยกเลิกโดยคน, หรือคืน `todo` หลังพิสูจน์ว่าไม่มี diff/PR. จากนั้นย้ายเข้า `claimed-{role}/` ตาม §3.2
+6. Dev claim ต้องสร้าง durable reservation ก่อนเขียน phase `claimed-dev`. Reservation คงอยู่ผ่าน `claimed-dev`, `in_review`, `claimed-qa`, `rework` และ `needs_attention` ที่ยังมี PR/branch เปิด; release เฉพาะ merge สำเร็จ, PR/branch ปิดหรือยกเลิกโดยคน, หรือคืน `todo` หลังพิสูจน์ว่าไม่มี diff/PR
    - `os.IsExist` / `os.IsNotExist` = มีคนหยิบไปก่อน → **ลองใบถัดไป** (อย่ารีบ exit 4)
    - ลองครบทุกใบแล้วไม่ได้เลย → exit 4
-7. อัปเดต `claimed_at` / `claimed_by` / `status` + append history + journal
+7. อัปเดต `claimed_at` / `claimed_by` + execution phase file + append history + journal
 8. พิมพ์การ์ดทั้งใบเป็น JSON ออก stdout
 
 **ไม่มีการ์ดให้ claim → exit 3 พร้อม `{"reason": "empty"|"all_conflicted"|"all_blocked"}`** — เหตุผลต่างกัน orchestrator ตัดสินใจต่างกัน
 
-#### `loopctl move ID --to STATUS --by ROLE/WORKER [--patch JSON] [--note TEXT]`
-ย้ายการ์ด + แก้ฟิลด์ในคราวเดียว
+#### `loopctl move ID --to PHASE --by ROLE/WORKER [--patch JSON] [--note TEXT]`
+บันทึก execution phase + แก้ snapshot ในคราวเดียว; Linear ยังคงเป็น board truth
 - ตรวจว่า transition ถูกต้องตาม §8 ไม่ถูก → exit 2
 - ตรวจสิทธิ์ตามตาราง §4 ไม่ผ่าน → exit 2
-- ใช้ protocol §3.2: queue lock → temp+fsync → durable intent → destination no-overwrite → verify hash → ลบต้นทาง → commit receipt. ห้ามลบต้นทางก่อน destination ถูกยืนยัน
+- ใช้ protocol §3.2: lock → temp+fsync → durable intent → canonical snapshot no-overwrite → verify hash → บันทึก phase → commit receipt
 - append history + journal ของ role นั้น
 
 #### `loopctl reconcile --role dev|qa`
-เก็บกวาดการ์ดค้างใน `claimed-{role}/`:
+เก็บกวาด execution phase claim ที่ค้าง:
 - `dev`: `claimed_at` เก่ากว่า `claim_stale_min` → ไปดูความจริงที่ runner result/Git:
-  - ไม่มี branch และไม่มี diff → คืน `todo/` (`attempts++`)
-  - มี branch + diff ครบ → คืน `in_review/` ถ้ามี PR แล้ว ไม่งั้น `needs_attention/`
-  - diff ครึ่ง ๆ กลาง ๆ → `needs_attention/` **อย่าเดาว่า worker ตั้งใจอะไร**
+  - ไม่มี branch และไม่มี diff → บันทึก phase `todo` (`attempts++`)
+  - มี branch + diff ครบ → บันทึก phase `in_review` ถ้ามี PR แล้ว ไม่งั้น `needs_attention`
+  - diff ครึ่ง ๆ กลาง ๆ → `needs_attention` **อย่าเดาว่า worker ตั้งใจอะไร**
 - `qa`: stale claim แล้ว PR ยังเปิด/head เดิม → คืน `in_review` (`attempts++`); head เปลี่ยน → `in_review(stale)`; PR merged → `sync-done`; PR closed/unresolvable → `needs_attention`
-- role ใดที่ `attempts ≥ max_attempts` → `needs_attention/`; ทุกทางต้องคง reservation หาก PR/branch ยัง active
+- role ใดที่ `attempts ≥ max_attempts` → execution phase `needs_attention`; ทุกทางต้องคง reservation หาก PR/branch ยัง active
 
 #### `loopctl status --role dev|qa`
 คืนทุกอย่างที่ orchestrator ต้องใช้ตัดสินใจใน**คำสั่งเดียว** (ออกแบบมาเพื่อไม่ให้ agent ต้องไปไล่ `ls` เอง — ประหยัด token):
@@ -495,7 +492,7 @@ sync ต้อง idempotent ด้วย `linear_issue_uuid` และ durable 
 #### `loopctl findings ID --file FINDINGS.json`
 แนบ findings ทุก severity โดย dedupe จาก fingerprint ของ `file,line,issue,violates,evidence,severity`:
 - validate ตาม §5 (blocking ต้องมี `violates`)
-- มี blocking → `rework_count++` และย้าย `rework/` หรือ `needs_attention/` เมื่อครบเพดาน
+- มี blocking → `rework_count++` และบันทึก execution phase `rework` หรือ `needs_attention` เมื่อครบเพดาน
 - มีเฉพาะ non-blocking → บันทึกไว้โดยคง `claimed-qa`; QA ใช้ `qa-merge` ต่อได้ และ retry ห้ามเพิ่ม finding/rework ซ้ำ
 
 #### `loopctl resolve ID --to todo|rework|cancelled --by human/ID --note TEXT [--close-pr]`
@@ -522,8 +519,8 @@ happy path หลัง QA ผ่าน:
 - ถ้าไม่ทราบ provenance/touches ของ base movement ให้ fail-safe mark ทุกการ์ด review เป็น stale
 
 #### `loopctl sync-done`
-ยืนยันจาก GitHub ว่า `qa-merge` merge PR เข้า `dev` สำเร็จ → ย้ายการ์ดไป `done/` และ sync Linear เป็น Done. ถ้า merge สำเร็จแต่ Linear ล่ม ให้ local เป็น `done` พร้อม pending sync; retry ห้าม merge ซ้ำ
-**`qa-merge` + `sync-done` เป็นทางเดียวที่การ์ดจะเข้า `done/` ได้** — ไม่มีคำสั่ง generic ให้ agent ตั้ง done เอง
+ยืนยันจาก GitHub ว่า `qa-merge` merge PR เข้า `dev` สำเร็จ → บันทึก execution phase `done` และ sync Linear เป็น Done. ถ้า merge สำเร็จแต่ Linear ล่ม ให้เก็บ phase `done` พร้อม pending sync; retry ห้าม merge ซ้ำ
+**`qa-merge` + `sync-done` เป็นทางเดียวที่ card จะเสร็จได้** — ไม่มีคำสั่ง generic ให้ agent ตั้ง done เอง
 - หลัง local done ให้ release reservation และเรียก selective stale evaluation ด้วย merged card/touches/base SHA; worktree รอ `gc-worktrees`
 
 #### `loopctl gc-worktrees`
@@ -543,23 +540,22 @@ happy path หลัง QA ผ่าน:
 | branch, PR head SHA, CI/merge receipt | Git/GitHub | card และ Linear เก็บ reference |
 | Done | GitHub merged-to-`dev` fact | local/Linear สะท้อนผล |
 
-Linear status mapping ตายตัวตาม category/name ที่ resolve ตอน `init`; mapping เป็น outbound mirror ของ runtime transition แต่ board display อ่านจาก Linear snapshot:
+Linear status mapping ตายตัวตาม category/name ที่ resolve ตอน `init`. Linear snapshot เป็น board truth; outbound mirror เกิดเฉพาะ lifecycle transition ที่ Workloop ตั้งใจทำ ไม่ใช่การยืนยัน local phase:
 
-| local | Linear |
+| Linear | execution eligibility |
 |---|---|
-| ยังไม่ import | Backlog (+ `loop:ready` เมื่ออนุมัติ) |
-| `todo`, `blocked` | Todo |
-| `claimed-dev`, `rework` | In Progress |
-| `in_review`, `claimed-qa` | In Review |
-| `needs_attention` | คง execution status ล่าสุด + `loop:needs-attention` |
-| `cancelled` | Canceled |
-| `done` | Done |
+| Backlog + `loop:ready` | import/claimable as `todo` |
+| Todo + `loop:ready` | claimable as `todo` |
+| In Progress + `loop:ready` | dev rework candidate |
+| In Review + `loop:ready` | QA candidate |
+| any state + `loop:needs-attention` | not claimable |
+| Done/Canceled or no `loop:ready` | not claimable; local phase may retain recovery history |
 
 กฎ conflict:
 - ก่อน claim: `contract_hash` ใหม่ที่ยังผ่าน DoR อัปเดต snapshot ได้
 - ตั้งแต่ claim: `contract_hash` เปลี่ยน = `spec_changed` และ `needs_attention`; ห้าม merge หรือแอบ sync ทับ worker
 - เปลี่ยน title/ข้อความประกอบที่ไม่กระทบ contract อัปเดต Linear ได้โดยไม่ interrupt
-- runtime execution status ไม่ถูกใช้เป็น board status; ถ้าคนลาก Linear ผิดระหว่าง execution ให้เก็บ Linear snapshot/report drift และหยุดหรือซ่อมเฉพาะเมื่อ policy ของ transition พิสูจน์ได้ ห้ามเอา local folder ไปแสดงแทน Linear บนกระดาน
+- runtime execution phase ไม่ถูกใช้เป็น board status; ถ้าคนลาก Linear ผิดระหว่าง execution ให้เก็บ Linear snapshot/report drift และ rehydrate เฉพาะ phase ที่ไม่ active เมื่อ policy พิสูจน์ได้ ห้ามเอา local folder ไปแสดงแทน Linear บนกระดาน
 
 ## 7.3 `/groom` interaction contract
 
@@ -681,7 +677,7 @@ loopctl heartbeat --role qa
 2. **การ์ดที่ `touches` ตัดกันมี active reservation พร้อมกันไม่ได้** ตั้งแต่ Dev claim จน PR merge/close
 3. **การ์ด `hot=true` ต้องเป็น active reservation เดียวเท่านั้น**
 4. **ไม่มีคำสั่งไหนที่ให้ role หนึ่งเขียนไฟล์ที่อีก role เป็นเจ้าของ** (ตาราง §4)
-5. **`done/` เข้าถึงได้เมื่อมี GitHub receipt ว่า QA merge เข้า `dev` ผ่าน `qa-merge` และ `sync-done` เท่านั้น**
+5. **Linear `Done` และ local completion จะเกิดเมื่อมี GitHub receipt ว่า QA merge เข้า `dev` ผ่าน `qa-merge` และ `sync-done` เท่านั้น**
 6. **`tier: L3` ไม่มีทางอยู่ในคิวได้**
 7. **finding ที่ blocking ต้องมี `violates` เสมอ**
 8. **`rework_count` ไปได้ทางเดียว** (เพิ่มอย่างเดียว ไม่มีคำสั่งไหนรีเซ็ตได้)
@@ -691,10 +687,10 @@ loopctl heartbeat --role qa
 12. หลัง claim แล้ว `contract_hash` เปลี่ยนต้องหยุดที่ `needs_attention`; ห้าม QA merge contract เก่า
 13. token/secret ไม่มีทางปรากฏใน config/card/journal/stdout
 14. QA merge ได้เฉพาะ base `dev`, merge commit, tested head SHA เดิม และ required checks ผ่าน
-15. queue mutation ทุกคำสั่งใช้ critical-section protocol เดียวกัน; ห้าม check-then-act นอก lock
+15. card/runtime mutation ทุกคำสั่งใช้ critical-section protocol เดียวกัน; ห้าม check-then-act นอก lock
 16. ทุก transition มี durable intent ที่ replay ได้; crash ระหว่าง phase ห้ามบังคับ doctor เดาสถานะ
 17. worktree/reservation ห้ามถูกลบหรือ release ขณะ PR/runner/card ยัง active
-18. `blocked` ต้องกลับ `todo` อัตโนมัติเมื่อ dependency ครบ และ dependency graph ต้องไม่มี cycle
+18. เมื่อ Linear dependency ครบ candidate ต้องกลับมา claimable และ dependency graph ต้องไม่มี cycle
 
 ---
 

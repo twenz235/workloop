@@ -56,8 +56,12 @@ func (s *State) RunSupervisor(ctx context.Context, executable string, once bool)
 			return nil
 		}
 		if s.Config.Linear.Enabled && (lastSync.IsZero() || time.Since(lastSync) >= time.Duration(s.Config.Linear.SyncIntervalSec)*time.Second) {
-			if _, err := s.Sync(ctx); err != nil {
-				return err
+			// Linear is authoritative for new intake, but an outage must not
+			// interrupt workers that already hold a local lease. Keep the last
+			// successful snapshot (and its stale marker) and retry on the next
+			// interval; Claim will fail closed until a fresh snapshot exists.
+			if _, syncErr := s.Sync(ctx); syncErr != nil && ExitCode(syncErr) != 8 {
+				return syncErr
 			}
 			lastSync = time.Now()
 		}
@@ -85,7 +89,7 @@ func (s *State) RunSupervisor(ctx context.Context, executable string, once bool)
 			for running < limit {
 				card, err := s.ClaimAndSync(ctx, role, "supervisor-"+strconv.Itoa(os.Getpid()))
 				if err != nil {
-					if code := ExitCode(err); code == 3 || code == 4 || code == 5 {
+					if code := ExitCode(err); code == 3 || code == 4 || code == 5 || code == 8 {
 						break
 					}
 					return err

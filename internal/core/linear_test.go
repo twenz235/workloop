@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	loopglob "github.com/twenz235/workloop/internal/glob"
 )
@@ -109,8 +110,16 @@ func TestClaimAndSyncFlushesLinearStateImmediately(t *testing.T) {
 	s := testState(t)
 	addTestCard(t, s, "claim-sync", []string{"claim.go"})
 	t.Setenv("LINEAR_API_TOKEN", "x")
-	s.Config.Linear.Enabled = true
 	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	// Seed the Linear snapshot without generating a remote mutation; the claim
+	// below is the only state write this test should observe.
+	if _, err := s.PatchInternal("claim-sync", map[string]any{"linear_state": "Todo", "linear_labels": []string{"loop:ready", "type:feature"}}, "Linear snapshot"); err != nil {
+		t.Fatal(err)
+	}
+	s.Config.Linear.Enabled = true
+	if err := s.updateLinearRuntime(func(runtime *linearRuntime) { runtime.LastSyncAt = Now() }); err != nil {
+		t.Fatal(err)
+	}
 	updates := 0
 	oldClient := defaultLinearHTTPClient
 	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -148,8 +157,14 @@ func TestClaimAndSyncKeepsFailedLinearStateQueued(t *testing.T) {
 	s := testState(t)
 	addTestCard(t, s, "claim-retry", []string{"retry.go"})
 	t.Setenv("LINEAR_API_TOKEN", "x")
-	s.Config.Linear.Enabled = true
 	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	if _, err := s.PatchInternal("claim-retry", map[string]any{"linear_state": "Todo", "linear_labels": []string{"loop:ready", "type:feature"}}, "Linear snapshot"); err != nil {
+		t.Fatal(err)
+	}
+	s.Config.Linear.Enabled = true
+	if err := s.updateLinearRuntime(func(runtime *linearRuntime) { runtime.LastSyncAt = Now() }); err != nil {
+		t.Fatal(err)
+	}
 	oldClient := defaultLinearHTTPClient
 	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("offline")
@@ -171,7 +186,7 @@ func TestClaimAndSyncKeepsFailedLinearStateQueued(t *testing.T) {
 	}
 }
 
-func TestLinearSyncRequeuesMissingNeedsAttentionLabel(t *testing.T) {
+func TestLinearSyncRehydratesAfterNeedsAttentionLabelRemoved(t *testing.T) {
 	s := testState(t)
 	addTestCard(t, s, "attention", []string{"src/attention.go"})
 	if _, err := s.withMoveInternal("attention", "needs_attention", "system/test", "QA failed", nil); err != nil {
@@ -188,31 +203,99 @@ func TestLinearSyncRequeuesMissingNeedsAttentionLabel(t *testing.T) {
 		case strings.Contains(query, "TeamStates"):
 			response = `{"data":{"team":{"states":{"nodes":[{"id":"todo-id","name":"Todo"}]}}}}`
 		default:
-			card := string(testCard("attention", []string{"src/attention.go"}))
+			var cardRaw map[string]any
+			if err := json.Unmarshal(testCard("attention", []string{"src/attention.go"}), &cardRaw); err != nil {
+				t.Fatal(err)
+			}
+			cardRaw["repo"] = s.Config.Repo
+			cardRaw["repo_path"] = s.Config.RepoPath
+			cardBytes, _ := json.Marshal(cardRaw)
+			card := string(cardBytes)
 			description := fmt.Sprintf("```loop-card\n%s\n```", card)
 			response = fmt.Sprintf(`{"data":{"team":{"issues":{"nodes":[{"id":"uuid-attention","identifier":"FLO-ATTENTION","title":"Attention","description":%q,"url":"https://linear.test/attention","updatedAt":"2026-08-14T00:00:00Z","priority":2,"state":{"name":"In Review"},"project":{"id":"project-1","name":"Acme"},"labels":{"nodes":[{"name":"loop:ready"},{"name":"type:feature"}]}}]}}}}`, description)
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{}}, nil
 	})}
 	t.Cleanup(func() { defaultLinearHTTPClient = oldClient })
-
 	result, err := s.Sync(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["pending"] != 1 {
+	if result["pending"] != 0 || len(result["needs_attention"].([]string)) != 0 {
 		t.Fatalf("result=%v", result)
 	}
 	runtime, err := s.loadLinearRuntime()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.Outbox) != 1 || runtime.Outbox[0].Kind != "attention" {
+	if len(runtime.Outbox) != 0 {
 		t.Fatalf("outbox=%v", runtime.Outbox)
 	}
-	_, _, _, card, err := s.readCardPath("attention")
-	if err != nil || card.LinearState != "In Review" {
+	status, _, _, card, err := s.readCardPath("attention")
+	if err != nil || status != "in_review" || card.LinearState != "In Review" {
 		t.Fatalf("card=%+v err=%v", card, err)
+	}
+}
+
+func TestClaimFailsClosedWithoutFreshLinearSnapshot(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "stale-snapshot", []string{"stale.go"})
+	s.Config.Linear.Enabled = true
+	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	if _, err := s.Claim("dev", "worker"); ExitCode(err) != 8 {
+		t.Fatalf("exit=%d err=%v, want fail-closed Linear snapshot", ExitCode(err), err)
+	}
+}
+
+func TestSupervisorDoesNotStopOnLinearOutage(t *testing.T) {
+	s := testState(t)
+	s.Config.Linear.Enabled = true
+	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	t.Setenv("LINEAR_API_TOKEN", "x")
+	oldClient := defaultLinearHTTPClient
+	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("offline")
+	})}
+	t.Cleanup(func() { defaultLinearHTTPClient = oldClient })
+	if err := s.RunSupervisor(context.Background(), "unused", true); err != nil {
+		t.Fatalf("supervisor returned outage as fatal error: %v", err)
+	}
+}
+
+func TestLinearReconcileDoesNotEchoLocalStateToBoard(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "reconcile-linear", []string{"reconcile.go"})
+	s.Config.Linear.Enabled = true
+	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	if _, err := s.PatchInternal("reconcile-linear", map[string]any{
+		"linear_state":  "In Progress",
+		"linear_labels": []string{"loop:ready", "type:feature"},
+	}, "Linear snapshot"); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour).Format(time.RFC3339Nano)
+	if _, err := s.withMoveInternal("reconcile-linear", "claimed-dev", "system/test", "claim", map[string]any{
+		"claimed_at": &old,
+		"claimed_by": "worker",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.updateLinearRuntime(func(runtime *linearRuntime) {
+		runtime.Outbox = nil
+		runtime.LastSyncAt = Now()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile("dev"); err != nil {
+		t.Fatal(err)
+	}
+	status, _, card, err := s.ReadCard("reconcile-linear")
+	if err != nil || status != "rework" || card.LinearState != "In Progress" {
+		t.Fatalf("status=%q card=%+v err=%v", status, card, err)
+	}
+	runtime, err := s.loadLinearRuntime()
+	if err != nil || len(runtime.Outbox) != 0 {
+		t.Fatalf("runtime=%+v err=%v; reconcile must not echo a state mutation", runtime, err)
 	}
 }
 
@@ -266,7 +349,7 @@ func TestLinearSyncRefreshesParentFromLinearRelationship(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, _, card, err = s.readCardPath("flo-1")
-	if err != nil || card.LinearParentID != parentID || card.Status != "cancelled" {
+	if err != nil || card.LinearParentID != parentID || card.Status != "todo" {
 		t.Fatalf("terminal parent=%q status=%q err=%v", card.LinearParentID, card.Status, err)
 	}
 	if got := result["updated"].([]string); len(got) != 1 || got[0] != "FLO-1" {

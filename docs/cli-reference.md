@@ -18,11 +18,11 @@ Output is JSON except for help text and the long-running supervisor. Commands ma
 | Command | Audience | Purpose |
 | --- | --- | --- |
 | `init` | user | Initialize one repository-bound state root. |
-| `add` | recovery | Import a validated card JSON file into the local queue. |
+| `add` | recovery | Import a validated card JSON snapshot into the private runtime. |
 | `list` | user | List and filter cards. |
-| `status` | user | Report queue, capacity, and role status. |
+| `status` | user | Report Linear board counts plus runtime capacity diagnostics. |
 | `claim` | internal | Atomically claim the next eligible card. |
-| `move` | advanced | Apply a role-authorized queue transition. |
+| `move` | advanced | Apply a role-authorized execution-phase transition. |
 | `findings` | internal | Record structured QA findings. |
 | `resolve` | user | Resolve a card requiring human attention or cancellation. |
 | `reconcile` | recovery | Recover stale Dev or QA claims. |
@@ -101,7 +101,9 @@ loopctl sync
 loopctl add (--file CARD.json | --stdin)
 ```
 
-Adds a validated card directly to the local queue as `human/add`. This is a recovery path, not the normal replacement for Groom → Linear → Sync.
+Imports a validated card snapshot into `.loopctl/cards/` and records its private
+execution phase. It never creates or edits a Linear issue, and is a recovery
+path—not the normal replacement for Groom → Linear → Sync.
 
 ```bash
 loopctl add --file restored-card.json
@@ -155,7 +157,9 @@ Enables or disables the macOS user LaunchAgent. `enable` is idempotent and launc
 loopctl list [--status STATUS] [--linear LINEAR_ID]
 ```
 
-Lists cards, optionally filtering by Linear state, Linear label, legacy runtime status, or Linear identifier. The `status` field is the latest Linear board state; `runtime_status` is diagnostic-only and is not a second board.
+Lists cards, optionally filtering by Linear state, Linear label, or Linear
+identifier. The `status` field is the latest Linear board snapshot; local
+execution phases are deliberately not returned as a second board.
 
 ```bash
 loopctl list
@@ -164,7 +168,11 @@ loopctl list --status loop:needs-attention
 loopctl list --linear ENG-123
 ```
 
-The internal runtime statuses are `todo`, `rework`, `claimed-dev`, `in_review`, `claimed-qa`, `needs_attention`, `blocked`, `cancelled`, and `done`. They support leases, retries, and recovery only. Linear states (`Backlog`, `Todo`, `In Progress`, `In Review`, `Done`, `Canceled`) are the user-facing workflow.
+The private execution phases are `todo`, `rework`, `claimed-dev`, `in_review`,
+`claimed-qa`, `needs_attention`, `blocked`, `cancelled`, and `done`. They are
+lease/retry/recovery bookkeeping only. Linear states (`Backlog`, `Todo`, `In
+Progress`, `In Review`, `Done`, `Canceled`) and labels are the user-facing
+workflow and the only eligibility source.
 
 ### `loopctl status`
 
@@ -172,7 +180,12 @@ The internal runtime statuses are `todo`, `rework`, `claimed-dev`, `in_review`, 
 loopctl status --role dev|qa
 ```
 
-Reports orchestrator state for the selected role, including queue and capacity information. `counts` is grouped by the latest Linear board state; `runtime_counts` is the private queue view used for scheduling and recovery. A stale snapshot is possible while Linear is unavailable; active claimed work can continue, but new Linear intake is blocked until sync recovers.
+Reports orchestrator state for the selected role. `counts` is grouped by the
+latest Linear board snapshot; `runtime_counts` is a private execution-phase
+diagnostic used for leases and recovery, not a local board. A stale snapshot is
+possible while Linear is unavailable; active claimed work can continue, but new
+Linear intake is blocked until sync recovers. `linear_snapshot_stale: true`
+means both `claimable_now` and new claims are fail-closed.
 
 ```bash
 loopctl status --role dev
@@ -185,7 +198,9 @@ loopctl status --role qa
 loopctl doctor
 ```
 
-Recovers incomplete durable transactions, checks queue invariants, and reports state issues. Run it after a crash, manual interruption, or unexpected result.
+Recovers incomplete durable transactions, checks card/runtime invariants, and
+reports state issues. Run it after a crash, manual interruption, or unexpected
+result.
 
 ### `loopctl version`
 
@@ -244,7 +259,12 @@ loopctl resolve CARD_ID --to todo|rework|cancelled
                 --by human/ID --note TEXT [--close-pr]
 ```
 
-Resolves a card in `needs_attention`. A human identity and non-empty audit note are mandatory. `todo` requires no PR or dirty worktree; `rework` requires an existing branch; `cancelled` requires `--close-pr` when its PR is open. Cancellation is also allowed from `todo` or `blocked`.
+Resolves a card whose Linear issue needs attention. A human identity and
+non-empty audit note are mandatory. The command updates private recovery data
+and queues the corresponding Linear state/label mutation. `todo` requires no PR
+or dirty worktree; `rework` requires an existing branch; `cancelled` requires
+`--close-pr` when its PR is open. Cancellation is also allowed from `todo` or
+`blocked`.
 
 ```bash
 loopctl resolve eng-123 --to rework --by human/alice \
@@ -257,7 +277,9 @@ loopctl resolve eng-123 --to rework --by human/alice \
 loopctl reconcile --role dev|qa
 ```
 
-Recovers stale claims for one role according to recorded heartbeats, claim age, and queue state. Use it after `doctor` when a worker died or a machine was interrupted.
+Recovers stale claims for one role according to recorded heartbeats, claim age,
+execution phase, Git state, and PR state. Use it after `doctor` when a worker
+died or a machine was interrupted.
 
 ### `loopctl sync-done`
 
@@ -376,7 +398,8 @@ Runs the unified provider adapter. It reads a Workloop runner-envelope JSON docu
 
 ## Safety rules
 
-- Do not edit `.loopctl` queue files manually.
+- Do not edit `.loopctl` card snapshots or runtime files manually. There is no
+  local status-folder queue; Linear is the workflow source of truth.
 - Do not run multiple supervisors for the same state root.
 - Do not force a card directly to `done`.
 - Do not deploy from Workloop; promotion beyond `dev` remains human-controlled.

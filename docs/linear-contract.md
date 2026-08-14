@@ -1,6 +1,6 @@
 # Linear contract
 
-The configured Linear workspace and team are the source of truth for requirements, priority, approval, labels, and the user-facing board status. The local filesystem is an internal runtime for claims, retries, reservations, workers, and crash recovery; it is not a second board. `loopctl list` and the `counts` field from `loopctl status` use the latest Linear snapshot stored on each imported card. `runtime_status` and `runtime_counts` exist only for diagnosis and scheduling. `loopctl init` discovers the token's workspace and selects its sole team automatically; when several teams exist, the user supplies only `--linear-team KEY`. Workloop contains no organization-specific defaults.
+The configured Linear workspace and team are the source of truth for requirements, priority, approval, labels, and the user-facing board status. The local filesystem is an internal runtime for claims, retries, reservations, workers, and crash recovery; it is not a second board. `loopctl list` and the `counts` field from `loopctl status` use the latest Linear snapshot stored on each imported card. Private execution phases and `runtime_counts` exist only for diagnosis and scheduling; they are never a board or eligibility source. `loopctl init` discovers the token's workspace and selects its sole team automatically; when several teams exist, the user supplies only `--linear-team KEY`. Workloop contains no organization-specific defaults.
 
 An approved issue stays in `Backlog` with `loop:ready`. `loopctl sync` validates its fenced `loop-card` JSON, creates exactly one internal card keyed by Linear UUID, stores the Linear state/labels snapshot, and moves Linear to `Todo`. Claims and worker transitions enqueue the corresponding Linear state/label change and flush it immediately when possible. A periodic sync refreshes the snapshot and retries any outbox action that could not be delivered. `needs_attention` retains the last Linear execution state and adds `loop:needs-attention`; the local runtime remains private.
 
@@ -16,4 +16,9 @@ Large requests use one parent issue plus 2–20 Linear sub-issues. The plan expl
 
 Linear's actual parent relationship is authoritative. Sync refreshes local `linear_parent_id` metadata when a child is moved without treating that administrative move as a contract change.
 
-Set `LINEAR_API_TOKEN` in the process environment or pass a strict owner-only env file. Tokens must never appear in cards, config, journals, plist files, or output.
+When Linear is unavailable, active leases continue locally but the supervisor
+does not claim new work or treat the cached board as fresh; it retries on the
+next interval. `loopctl status` exposes `linear_snapshot_stale: true` until a
+successful sync. Set `LINEAR_API_TOKEN` in the process environment or pass a
+strict owner-only env file. Tokens must never appear in cards, config, journals,
+plist files, or output.

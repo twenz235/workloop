@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const Version = "0.2.4"
+const Version = "0.2.5"
 
 var cardIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 var workerIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -134,25 +134,27 @@ type Card struct {
 	ContractHash    string          `json:"contract_hash"`
 	ApprovedAt      string          `json:"approved_at"`
 	ApprovedBy      string          `json:"approved_by"`
-	Status          string          `json:"status"`
-	Hot             bool            `json:"hot"`
-	Attempts        int             `json:"attempts"`
-	MaxAttempts     int             `json:"max_attempts"`
-	ReworkCount     int             `json:"rework_count"`
-	MaxRework       int             `json:"max_rework"`
-	ConflictSkips   int             `json:"conflict_skips"`
-	ClaimedAt       *string         `json:"claimed_at"`
-	ClaimedBy       *string         `json:"claimed_by"`
-	Worktree        *string         `json:"worktree"`
-	Branch          *string         `json:"branch"`
-	PR              any             `json:"pr"`
-	BaseSHA         *string         `json:"base_sha"`
-	TestedHeadSHA   *string         `json:"tested_head_sha"`
-	Stale           bool            `json:"stale"`
-	SpecChanged     bool            `json:"spec_changed"`
-	QAFindings      []Finding       `json:"qa_findings"`
-	QAEvidence      []string        `json:"qa_evidence,omitempty"`
-	History         []History       `json:"history"`
+	// Status is an in-memory execution phase only. Linear owns workflow state;
+	// never serialize this field into a canonical card snapshot.
+	Status        string    `json:"-"`
+	Hot           bool      `json:"hot"`
+	Attempts      int       `json:"attempts"`
+	MaxAttempts   int       `json:"max_attempts"`
+	ReworkCount   int       `json:"rework_count"`
+	MaxRework     int       `json:"max_rework"`
+	ConflictSkips int       `json:"conflict_skips"`
+	ClaimedAt     *string   `json:"claimed_at"`
+	ClaimedBy     *string   `json:"claimed_by"`
+	Worktree      *string   `json:"worktree"`
+	Branch        *string   `json:"branch"`
+	PR            any       `json:"pr"`
+	BaseSHA       *string   `json:"base_sha"`
+	TestedHeadSHA *string   `json:"tested_head_sha"`
+	Stale         bool      `json:"stale"`
+	SpecChanged   bool      `json:"spec_changed"`
+	QAFindings    []Finding `json:"qa_findings"`
+	QAEvidence    []string  `json:"qa_evidence,omitempty"`
+	History       []History `json:"history"`
 }
 
 type Visual struct {
@@ -187,17 +189,27 @@ type Reservation struct {
 }
 
 type Transaction struct {
-	ID          string `json:"id"`
-	CardID      string `json:"card_id"`
-	Source      string `json:"source"`
-	Destination string `json:"destination"`
-	Hash        string `json:"hash"`
-	Operation   string `json:"operation"`
-	Actor       string `json:"actor"`
-	Phase       string `json:"phase"`
-	Temp        string `json:"temp"`
-	Stage       string `json:"stage,omitempty"`
-	CreatedAt   string `json:"created_at"`
+	ID           string `json:"id"`
+	CardID       string `json:"card_id"`
+	Source       string `json:"source"`
+	Destination  string `json:"destination"`
+	Hash         string `json:"hash"`
+	Operation    string `json:"operation"`
+	Actor        string `json:"actor"`
+	Phase        string `json:"phase"`
+	Temp         string `json:"temp"`
+	Stage        string `json:"stage,omitempty"`
+	RuntimePhase string `json:"runtime_phase,omitempty"`
+	CreatedAt    string `json:"created_at"`
+}
+
+// RuntimePhase is private execution bookkeeping. It is deliberately kept
+// separate from the Linear card snapshot: Linear owns the workflow state;
+// Workloop only records what a local worker is doing or recovering.
+type RuntimePhase struct {
+	CardID    string `json:"card_id"`
+	Phase     string `json:"phase"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 func Now() string { return time.Now().Format(time.RFC3339Nano) }

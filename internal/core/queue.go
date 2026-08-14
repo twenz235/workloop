@@ -44,7 +44,15 @@ func (s *State) Add(data []byte, actor string) (map[string]any, error) {
 					return E(2, "Linear issue UUID already imported")
 				}
 			}
-			if err := validateDependencies(card, cards); err != nil {
+			external := map[string]bool{}
+			if s.Config.Linear.Enabled {
+				if linearRuntime, runtimeErr := s.loadLinearRuntime(); runtimeErr == nil {
+					for dependencyID := range linearRuntime.IssueStates {
+						external[dependencyID] = true
+					}
+				}
+			}
+			if err := validateDependenciesWithExternal(card, cards, external); err != nil {
 				return err
 			}
 		}
@@ -84,6 +92,14 @@ func validateDependencies(card *Card, cards []struct {
 	Raw          map[string]any
 	Card         *Card
 }) error {
+	return validateDependenciesWithExternal(card, cards, nil)
+}
+
+func validateDependenciesWithExternal(card *Card, cards []struct {
+	Status, Path string
+	Raw          map[string]any
+	Card         *Card
+}, external map[string]bool) error {
 	graph := map[string][]string{}
 	for _, x := range cards {
 		if x.Card.LinearIssueUUID != "" {
@@ -95,7 +111,10 @@ func validateDependencies(card *Card, cards []struct {
 	}
 	for _, dep := range card.DependsOn {
 		if _, ok := graph[dep]; !ok {
-			return E(2, "dependency %s does not exist", dep)
+			if !external[dep] {
+				return E(2, "dependency %s does not exist", dep)
+			}
+			graph[dep] = nil
 		}
 	}
 	visiting := map[string]bool{}
@@ -127,7 +146,7 @@ func validateDependencies(card *Card, cards []struct {
 }
 
 func normalizeNew(raw map[string]any, c *Card, cfg *Config) {
-	raw["status"] = "todo"
+	delete(raw, "status")
 	raw["hot"] = loopglob.PatternsOverlap(c.Touches, cfg.HotPaths)
 	defaults := map[string]any{"attempts": 0, "max_attempts": 2, "rework_count": 0, "max_rework": 2, "conflict_skips": 0, "claimed_at": nil, "claimed_by": nil, "worktree": nil, "branch": nil, "pr": nil, "base_sha": nil, "tested_head_sha": nil, "stale": false, "spec_changed": false, "qa_findings": []any{}, "qa_evidence": []any{}, "proposed": []any{}, "history": []any{}, "linear_labels": []string{}}
 	for k, v := range defaults {
@@ -145,18 +164,22 @@ func txID() string {
 
 func (s *State) publish(id, sourceStatus, destStatus string, data []byte, operation, actor string) error {
 	if !statusValid(destStatus) {
-		return E(2, "invalid destination status")
+		return E(2, "invalid runtime phase")
 	}
-	if sourceStatus != "" && sourceStatus == destStatus {
-		return s.rewrite(id, sourceStatus, data, operation, actor)
+	dest := s.cardPath(id)
+	if _, err := os.Stat(dest); err == nil {
+		if sourceStatus == "" {
+			return E(4, "card already exists")
+		}
+		if err := s.rewritePhase(id, sourceStatus, data, operation, actor, destStatus); err != nil {
+			return err
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	txid := txID()
-	tmp := filepath.Join(s.Root, "queue", ".tmp", txid+".json")
-	dest := filepath.Join(s.Root, "queue", destStatus, id+".json")
-	source := ""
-	if sourceStatus != "" {
-		source = filepath.Join(s.Root, "queue", sourceStatus, id+".json")
-	}
+	tmp := filepath.Join(s.Root, cardStoreDir, ".tmp", txid+".json")
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
@@ -172,7 +195,7 @@ func (s *State) publish(id, sourceStatus, destStatus string, data []byte, operat
 		return err
 	}
 	_ = syncDir(filepath.Dir(tmp))
-	tx := Transaction{ID: txid, CardID: id, Source: source, Destination: dest, Hash: Hash(data), Operation: operation, Actor: actor, Phase: "prepared", Temp: tmp, CreatedAt: Now()}
+	tx := Transaction{ID: txid, CardID: id, Destination: dest, Hash: Hash(data), Operation: operation, Actor: actor, Phase: "prepared", Temp: tmp, RuntimePhase: destStatus, CreatedAt: Now()}
 	intent := filepath.Join(s.Root, "runtime", "transactions", txid+".json")
 	if err := writeTx(intent, &tx); err != nil {
 		os.Remove(tmp)
@@ -193,13 +216,6 @@ func (s *State) publish(id, sourceStatus, destStatus string, data []byte, operat
 		return err
 	}
 	fault("destination-created")
-	if source != "" {
-		sourceRel, _ := s.rel(source)
-		if err := s.FS.Remove(sourceRel); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-		_ = syncDir(filepath.Dir(source))
-	}
 	_ = s.FS.Remove(tmpRel)
 	tx.Phase = "source-removed"
 	if err := writeTx(intent, &tx); err != nil {
@@ -207,14 +223,21 @@ func (s *State) publish(id, sourceStatus, destStatus string, data []byte, operat
 	}
 	fault("source-removed")
 	tx.Phase = "committed"
-	return writeTx(intent, &tx)
+	if err := writeTx(intent, &tx); err != nil {
+		return err
+	}
+	return s.setRuntimePhase(id, destStatus)
 }
 
 func (s *State) rewrite(id, status string, data []byte, operation, actor string) error {
+	return s.rewritePhase(id, status, data, operation, actor, "")
+}
+
+func (s *State) rewritePhase(id, status string, data []byte, operation, actor, phase string) error {
 	txid := txID()
-	tmp := filepath.Join(s.Root, "queue", ".tmp", txid+".json")
-	stage := filepath.Join(s.Root, "queue", ".tmp", txid+".published")
-	source := filepath.Join(s.Root, "queue", status, id+".json")
+	tmp := filepath.Join(s.Root, cardStoreDir, ".tmp", txid+".json")
+	stage := filepath.Join(s.Root, cardStoreDir, ".tmp", txid+".published")
+	source := s.cardPath(id)
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
@@ -228,7 +251,7 @@ func (s *State) rewrite(id, status string, data []byte, operation, actor string)
 	if err != nil {
 		return err
 	}
-	tx := Transaction{ID: txid, CardID: id, Source: source, Destination: source, Stage: stage, Hash: Hash(data), Operation: operation, Actor: actor, Phase: "prepared", Temp: tmp, CreatedAt: Now()}
+	tx := Transaction{ID: txid, CardID: id, Source: source, Destination: source, Stage: stage, Hash: Hash(data), Operation: operation, Actor: actor, Phase: "prepared", Temp: tmp, RuntimePhase: phase, CreatedAt: Now()}
 	intent := filepath.Join(s.Root, "runtime", "transactions", txid+".json")
 	if err := writeTx(intent, &tx); err != nil {
 		return err
@@ -260,7 +283,13 @@ func (s *State) rewrite(id, status string, data []byte, operation, actor string)
 	_ = s.FS.Remove(tmpRel)
 	_ = syncDir(filepath.Dir(source))
 	tx.Phase = "committed"
-	return writeTx(intent, &tx)
+	if err := writeTx(intent, &tx); err != nil {
+		return err
+	}
+	if phase != "" {
+		return s.setRuntimePhase(id, phase)
+	}
+	return nil
 }
 
 func fault(phase string) {
@@ -293,7 +322,7 @@ func (s *State) moveLocked(id, to, actor, note string, patch map[string]any, int
 	for k, v := range patch {
 		raw[k] = v
 	}
-	raw["status"] = to
+	delete(raw, "status")
 	history, _ := raw["history"].([]any)
 	history = append(history, map[string]any{"at": Now(), "from": from, "to": to, "by": actor, "note": note})
 	raw["history"] = history
@@ -307,8 +336,12 @@ func (s *State) moveLocked(id, to, actor, note string, patch map[string]any, int
 	if err := s.publish(card.ID, from, to, encoded, "move", actor); err != nil {
 		return nil, err
 	}
-	if err := s.enqueueLinear(card, from, to); err != nil {
-		return raw, E(7, "move committed but Linear outbox failed: %v", err)
+	// A sync transition mirrors facts read from Linear into local runtime only;
+	// it must never write the remote board back based on that same observation.
+	if !strings.HasPrefix(actor, "system/sync") && !strings.HasPrefix(actor, "system/linear") {
+		if err := s.enqueueLinear(card, from, to); err != nil {
+			return raw, E(7, "move committed but Linear outbox failed: %v", err)
+		}
 	}
 	if err := s.appendJournal(roleFromActor(actor), id, from, to, actor, note); err != nil {
 		return raw, E(7, "move committed but journal failed: %v", err)
@@ -343,6 +376,9 @@ func (s *State) readCardPath(id string) (string, string, map[string]any, *Card, 
 		return "", "", nil, nil, err
 	}
 	raw, card, err := DecodeCard(b, &s.Config)
+	if err == nil {
+		card.Status = status
+	}
 	return status, path, raw, card, err
 }
 
@@ -413,6 +449,12 @@ func (s *State) Claim(role, worker string) (map[string]any, error) {
 		if t, e := time.Parse(time.RFC3339, *s.Config.DeadlineAt); e == nil && time.Now().After(t) {
 			return nil, E(6, "deadline passed")
 		}
+	}
+	// Linear owns intake eligibility. Check the snapshot only after the
+	// stop/deadline guards so an explicit stop remains the authoritative
+	// operator signal even while the network is unavailable.
+	if err := s.requireFreshLinearSnapshot(); err != nil {
+		return nil, err
 	}
 	openPRs := 0
 	if role == "dev" {
@@ -489,6 +531,28 @@ func (s *State) Claim(role, worker string) (map[string]any, error) {
 	return result, err
 }
 
+func (s *State) requireFreshLinearSnapshot() error {
+	if !s.Config.Linear.Enabled {
+		return nil
+	}
+	runtime, err := s.loadLinearRuntime()
+	if err != nil {
+		return E(8, "Linear snapshot unavailable: %v", err)
+	}
+	last, err := time.Parse(time.RFC3339Nano, runtime.LastSyncAt)
+	if err != nil || last.IsZero() {
+		return E(8, "Linear snapshot unavailable; run loopctl sync")
+	}
+	interval := time.Duration(s.Config.Linear.SyncIntervalSec) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	if time.Since(last) > interval {
+		return E(8, "Linear snapshot is stale; run loopctl sync")
+	}
+	return nil
+}
+
 // ClaimAndSync claims locally first, then immediately mirrors the resulting
 // state to Linear. Linear failures are intentionally left in the outbox so a
 // remote outage never strands a locally claimed card without a worker.
@@ -504,22 +568,19 @@ func (s *State) ClaimAndSync(ctx context.Context, role, worker string) (map[stri
 }
 
 func (s *State) blockWaitingCards() error {
-	entries, err := os.ReadDir(filepath.Join(s.Root, "queue", "todo"))
+	// Dependency readiness is derived from Linear states. There is no local
+	// todo queue to mutate or block anymore.
+	if s.Config.Linear.Enabled {
+		return nil
+	}
+	cards, err := s.AllCards()
 	if err != nil {
 		return err
 	}
-	for _, ent := range entries {
-		if !strings.HasSuffix(ent.Name(), ".json") {
-			continue
-		}
-		id := strings.TrimSuffix(ent.Name(), ".json")
-		_, _, _, c, e := s.readCardPath(id)
-		if e != nil {
-			return e
-		}
-		if len(c.DependsOn) > 0 && !s.dependenciesDone(c) {
-			if _, e = s.moveLocked(id, "blocked", "system", "waiting for dependencies", nil, true); e != nil {
-				return e
+	for _, item := range cards {
+		if item.Status == "todo" && len(item.Card.DependsOn) > 0 && !s.dependenciesDone(item.Card) {
+			if _, err := s.moveLocked(item.Card.ID, "blocked", "system", "waiting for dependencies", nil, true); err != nil {
+				return err
 			}
 		}
 	}
@@ -533,27 +594,16 @@ type cardItem struct {
 
 func (s *State) candidates(statuses []string) ([]cardItem, error) {
 	var out []cardItem
-	for rank, status := range statuses {
-		entries, err := os.ReadDir(filepath.Join(s.Root, "queue", status))
-		if err != nil {
-			return nil, err
+	cards, err := s.AllCards()
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range cards {
+		rank, ok := s.linearCandidateRank(item.Card, item.Status, statuses)
+		if !ok || !s.dependenciesDone(item.Card) {
+			continue
 		}
-		for _, ent := range entries {
-			if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".json") {
-				continue
-			}
-			b, err := os.ReadFile(filepath.Join(s.Root, "queue", status, ent.Name()))
-			if err != nil {
-				return nil, err
-			}
-			_, c, err := DecodeCard(b, &s.Config)
-			if err != nil {
-				return nil, err
-			}
-			if s.dependenciesDone(c) {
-				out = append(out, cardItem{Status: fmt.Sprintf("%d:%s", rank, status), Card: c})
-			}
-		}
+		out = append(out, cardItem{Status: fmt.Sprintf("%d:%s", rank, item.Status), Card: item.Card})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		ri, rj := strings.SplitN(out[i].Status, ":", 2)[0], strings.SplitN(out[j].Status, ":", 2)[0]
@@ -580,8 +630,52 @@ func (s *State) candidates(statuses []string) ([]cardItem, error) {
 	return out, nil
 }
 
+func (s *State) linearCandidateRank(c *Card, runtimePhase string, statuses []string) (int, bool) {
+	if !s.Config.Linear.Enabled {
+		for rank, status := range statuses {
+			if runtimePhase == status {
+				return rank, true
+			}
+		}
+		return 0, false
+	}
+	if c.LinearState == "" || containsString(c.LinearLabels, s.Config.Linear.NeedsAttentionLabel) {
+		return 0, false
+	}
+	// A reopened Linear issue is eligible even when its historical local phase
+	// was cancelled/done; only an active lease can veto a new claim.
+	for rank, status := range statuses {
+		switch status {
+		case "in_review":
+			if c.LinearState == s.Config.Linear.StatusMap["in_review"] && runtimePhase != "claimed-qa" {
+				return rank, true
+			}
+		case "rework", "todo":
+			if c.LinearState == s.Config.Linear.StatusMap["in_progress"] && status == "rework" && runtimePhase != "claimed-dev" && runtimePhase != "in_review" && runtimePhase != "claimed-qa" {
+				return rank, true
+			}
+			if c.LinearState == s.Config.Linear.StatusMap["todo"] && status == "todo" && runtimePhase != "claimed-dev" && runtimePhase != "in_review" && runtimePhase != "claimed-qa" {
+				return rank, true
+			}
+		}
+	}
+	return 0, false
+}
+
 func (s *State) dependenciesDone(c *Card) bool {
 	if len(c.DependsOn) == 0 {
+		return true
+	}
+	if s.Config.Linear.Enabled {
+		runtime, err := s.loadLinearRuntime()
+		if err != nil {
+			return false
+		}
+		for _, dep := range c.DependsOn {
+			if runtime.IssueStates[dep] != s.Config.Linear.StatusMap["done"] {
+				return false
+			}
+		}
 		return true
 	}
 	cards, err := s.AllCards()
@@ -604,21 +698,16 @@ func (s *State) dependenciesDone(c *Card) bool {
 }
 
 func (s *State) autoUnblock() error {
-	entries, err := os.ReadDir(filepath.Join(s.Root, "queue", "blocked"))
+	if s.Config.Linear.Enabled {
+		return nil
+	}
+	cards, err := s.AllCards()
 	if err != nil {
 		return err
 	}
-	for _, ent := range entries {
-		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".json") {
-			continue
-		}
-		id := strings.TrimSuffix(ent.Name(), ".json")
-		_, _, _, c, err := s.readCardPath(id)
-		if err != nil {
-			return err
-		}
-		if s.dependenciesDone(c) {
-			if _, err := s.moveLocked(id, "todo", "system", "dependencies completed", nil, true); err != nil {
+	for _, item := range cards {
+		if item.Status == "blocked" && s.dependenciesDone(item.Card) {
+			if _, err := s.moveLocked(item.Card.ID, "todo", "system", "dependencies completed", nil, true); err != nil {
 				return err
 			}
 		}
@@ -627,10 +716,15 @@ func (s *State) autoUnblock() error {
 }
 
 func (s *State) inFlight() int {
+	cards, err := s.AllCards()
+	if err != nil {
+		return 0
+	}
 	n := 0
-	for _, status := range []string{"claimed-dev", "in_review", "claimed-qa"} {
-		entries, _ := os.ReadDir(filepath.Join(s.Root, "queue", status))
-		n += len(entries)
+	for _, item := range cards {
+		if item.Status == "claimed-dev" || item.Status == "in_review" || item.Status == "claimed-qa" {
+			n++
+		}
 	}
 	return n
 }
@@ -751,6 +845,11 @@ func (s *State) RecoverTransactions() error {
 				return E(7, "invalid transaction %s", ent.Name())
 			}
 			if tx.Phase == "committed" {
+				if tx.RuntimePhase != "" {
+					if err := s.setRuntimePhase(tx.CardID, tx.RuntimePhase); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			if tx.Stage != "" {
@@ -787,6 +886,11 @@ func (s *State) RecoverTransactions() error {
 			tx.Phase = "committed"
 			if err := writeTx(path, &tx); err != nil {
 				return err
+			}
+			if tx.RuntimePhase != "" {
+				if err := s.setRuntimePhase(tx.CardID, tx.RuntimePhase); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -839,5 +943,11 @@ func (s *State) recoverRewrite(intent string, tx *Transaction) error {
 	_ = s.FS.Remove(stageRel)
 	_ = s.FS.Remove(tempRel)
 	tx.Phase = "committed"
-	return writeTx(intent, tx)
+	if err := writeTx(intent, tx); err != nil {
+		return err
+	}
+	if tx.RuntimePhase != "" {
+		return s.setRuntimePhase(tx.CardID, tx.RuntimePhase)
+	}
+	return nil
 }

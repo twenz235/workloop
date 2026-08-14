@@ -98,7 +98,9 @@ The normal intake path is:
 Groom → approved Linear Backlog issue + loop:ready → loopctl sync → Todo
 ```
 
-Do not use `loopctl add` for normal intake. It exists to restore a validated card from JSON when recovering a queue.
+Do not use `loopctl add` for normal intake. It imports a validated Linear card
+snapshot into the private runtime as a recovery operation; it does not create
+or move a Linear issue.
 
 ## 5. Run the workflow
 
@@ -143,10 +145,11 @@ loopctl status --role qa
 loopctl doctor
 ```
 
-Filter cards by queue status or Linear identifier:
+Filter cards by Linear state/label or identifier:
 
 ```bash
-loopctl list --status needs_attention
+loopctl list --status "In Review"
+loopctl list --status loop:needs-attention
 loopctl list --linear ENG-123
 ```
 
@@ -156,12 +159,11 @@ The usual Linear board lifecycle is:
 Backlog + loop:ready → Todo → In Progress → In Review → Done
 ```
 
-The private runtime may briefly use `claimed-dev`, `claimed-qa`, `rework`, or
-`needs_attention` to coordinate workers. QA may send a card back to Linear
-`In Progress`; a problem requiring a decision keeps the last Linear state and
-adds `loop:needs-attention` until a human resolves it. Use `loopctl list` and
-`loopctl status` for the Linear board view; use `runtime_status` only when
-diagnosing a worker or recovery issue.
+The private runtime may record execution phases such as `claimed-dev`,
+`claimed-qa`, or `rework` for leases and crash recovery. These phases are not
+the board and are never the source of eligibility. Linear state and labels are
+authoritative: if a human reopens a canceled issue with `loop:ready`, the next
+sync rehydrates the local runtime and the issue becomes claimable again.
 
 ## 7. Resolve cards needing human attention
 
@@ -219,7 +221,7 @@ loopctl gc-worktrees
 1. Groom and approve work in Linear.
 2. Let the running supervisor sync automatically, or run `loopctl sync`.
 3. Check progress with `loopctl list` and `loopctl status`.
-4. Review and resolve only cards in `needs_attention`.
+4. Review and resolve only Linear issues carrying `loop:needs-attention`.
 5. After Workloop merges to `dev`, use your normal human-controlled release process for other environments.
 
 For advanced recovery commands, internal worker commands, all flags, and exit codes, continue to the [CLI Reference](cli-reference.md).

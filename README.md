@@ -15,7 +15,7 @@ Workloop is an orchestrator; it does not replace an AI coding agent, issue track
 - **Codex or Claude Code** — at least one is required. It performs the Dev and QA work that Workloop schedules. You may install both and choose the active provider in configuration.
 - **Linear** — required as the source of truth for requirements, approval, priority, and human-visible status. Workloop imports only approved issues carrying `loop:ready`.
 - **GitHub** — required for branches, pull requests, checks, and the verified merge into `dev`.
-- **Workloop (`loopctl`)** — connects the three systems, owns the durable local queue, isolates workers in Git worktrees, retries safely, and enforces the Dev → QA → merge lifecycle.
+- **Workloop (`loopctl`)** — connects the three systems, keeps only private runtime/lease data locally, isolates workers in Git worktrees, retries safely, and enforces the Dev → QA → merge lifecycle.
 
 In short: Linear decides **what** is ready and what people see on the board, Codex or Claude Code performs the work, GitHub carries the reviewed change, and Workloop coordinates the lifecycle between them.
 
@@ -26,9 +26,11 @@ parent/child links, and acceptance checklist are the values shown to people.
 Workloop still keeps a private `.loopctl` runtime for leases, reservations,
 retries, worker metadata, outbox actions, and crash recovery; it is not a
 second board and must not be edited by hand. `loopctl list` and the `counts`
-field from `loopctl status` use the latest Linear snapshot. The
-`runtime_status`/`runtime_counts` fields are diagnostics for the orchestrator,
-not an alternative workflow board.
+field from `loopctl status` use the latest Linear snapshot. Local execution
+phases are private diagnostics for the orchestrator, not an
+alternative workflow board. There is no local `queue/<status>` source of
+truth: reopening or moving an issue in Linear is what changes its workflow
+eligibility.
 
 ## Documentation
 
@@ -130,14 +132,16 @@ loopctl stop
 loopctl restart
 ```
 
-Cards requiring a human decision remain in `needs_attention` until explicitly resolved:
+Cards requiring a human decision keep the `loop:needs-attention` label in Linear
+until explicitly resolved:
 
 ```bash
 loopctl resolve eng-123 --to rework --by human/alice \
   --note "The updated requirement is approved"
 ```
 
-Never edit queue files manually or move a card directly to Done. Only QA merge followed by a verified `sync-done` can complete work.
+Never edit `.loopctl` runtime files manually or move a card directly to Done.
+Only QA merge followed by a verified `sync-done` can complete work.
 
 ## Development
 

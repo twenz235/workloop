@@ -19,6 +19,13 @@ type State struct {
 	FS     *os.Root
 }
 
+const (
+	cardStoreDir   = "cards"
+	executionDir   = "runtime/execution"
+	legacyStoreDir = "runtime/legacy"
+	legacyManifest = "runtime/legacy-manifest.json"
+)
+
 func Open(root string) (*State, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -40,6 +47,9 @@ func Open(root string) (*State, error) {
 	}
 	if current := repoIdentity(gitOutput(cfg.RepoPath, "remote", "get-url", "origin")); current == "" || current != cfg.Repo {
 		return nil, E(2, "bound Git remote identity changed")
+	}
+	if err := prepareRuntimeLayout(abs); err != nil {
+		return nil, err
 	}
 	rootFS, err := os.OpenRoot(abs)
 	if err != nil {
@@ -123,10 +133,7 @@ func Init(project, repoPath, stateRoot string, bindings ...LinearConfig) (*State
 		Linear:            linear,
 		GitHub:            GitHubConfig{Enabled: repo != "", OpenPRCacheMaxAgeSec: 300},
 	}
-	dirs := []string{root, filepath.Join(root, "queue", ".tmp"), filepath.Join(root, "journal", "workers"), filepath.Join(root, "runtime", "transactions"), filepath.Join(root, "runtime", "reservations"), filepath.Join(root, "runtime", "workers"), filepath.Join(root, "runtime", "merges"), cfg.WorktreeRoot}
-	for _, status := range Statuses {
-		dirs = append(dirs, filepath.Join(root, "queue", status))
-	}
+	dirs := []string{root, filepath.Join(root, cardStoreDir), filepath.Join(root, cardStoreDir, ".tmp"), filepath.Join(root, executionDir), filepath.Join(root, filepath.Dir(legacyStoreDir)), filepath.Join(root, legacyStoreDir), filepath.Join(root, "journal", "workers"), filepath.Join(root, "runtime", "transactions"), filepath.Join(root, "runtime", "reservations"), filepath.Join(root, "runtime", "workers"), filepath.Join(root, "runtime", "merges"), cfg.WorktreeRoot}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0700); err != nil {
 			return nil, err
@@ -160,6 +167,209 @@ func Init(project, repoPath, stateRoot string, bindings ...LinearConfig) (*State
 		return nil, err
 	}
 	return &State{Root: root, Config: cfg, FS: rootFS}, nil
+}
+
+func prepareRuntimeLayout(root string) error {
+	for _, dir := range []string{filepath.Join(root, cardStoreDir), filepath.Join(root, cardStoreDir, ".tmp"), filepath.Join(root, executionDir), filepath.Join(root, legacyStoreDir)} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return err
+		}
+	}
+	return migrateLegacyQueue(root)
+}
+
+func migrateLegacyQueue(root string) error {
+	legacyRoot := filepath.Join(root, "queue")
+	_, err := os.ReadDir(legacyRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := ensureLegacyTransactionsSettled(root); err != nil {
+		return err
+	}
+	manifest := map[string]string{}
+	seen := map[string]string{}
+	manifestPath := filepath.Join(root, legacyManifest)
+	if b, readErr := os.ReadFile(manifestPath); readErr == nil {
+		if err := json.Unmarshal(b, &manifest); err != nil {
+			return E(7, "invalid legacy migration manifest: %v", err)
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return readErr
+	}
+	for _, status := range Statuses {
+		statusDir := filepath.Join(legacyRoot, status)
+		files, readErr := os.ReadDir(statusDir)
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		if readErr != nil {
+			return readErr
+		}
+		for _, ent := range files {
+			if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".json") {
+				continue
+			}
+			id := strings.TrimSuffix(ent.Name(), ".json")
+			if !cardIDPattern.MatchString(id) {
+				return E(7, "legacy queue contains invalid card %s", ent.Name())
+			}
+			if prior := seen[id]; prior != "" {
+				return E(7, "legacy card %s exists in both %s and %s", id, prior, status)
+			}
+			seen[id] = status
+			source := filepath.Join(statusDir, ent.Name())
+			data, readErr := os.ReadFile(source)
+			if readErr != nil {
+				return readErr
+			}
+			var raw map[string]any
+			if json.Unmarshal(data, &raw) != nil {
+				return E(7, "legacy card %s is invalid", id)
+			}
+			delete(raw, "status")
+			canonical, encodeErr := Encode(raw)
+			if encodeErr != nil {
+				return encodeErr
+			}
+			target := filepath.Join(root, cardStoreDir, ent.Name())
+			if existing, statErr := os.Stat(target); errors.Is(statErr, os.ErrNotExist) {
+				if writeErr := writeAtomic(target, canonical, 0600); writeErr != nil {
+					return writeErr
+				}
+			} else if statErr != nil {
+				return statErr
+			} else if existing.IsDir() {
+				return E(7, "card store target %s is a directory", id)
+			} else if existingData, readErr := os.ReadFile(target); readErr != nil {
+				return readErr
+			} else if Hash(existingData) != Hash(canonical) {
+				return E(7, "legacy card collision for %s", id)
+			}
+			if err := writeRuntimePhase(root, id, status); err != nil {
+				return err
+			}
+			manifest[id] = status
+			archive := filepath.Join(root, legacyStoreDir, ent.Name())
+			if _, statErr := os.Stat(archive); errors.Is(statErr, os.ErrNotExist) {
+				if err := os.Rename(source, archive); err != nil {
+					return err
+				}
+			} else if statErr != nil {
+				return statErr
+			} else {
+				archived, readErr := os.ReadFile(archive)
+				if readErr != nil {
+					return readErr
+				}
+				if Hash(archived) != Hash(data) {
+					return E(7, "legacy archive collision for card %s", id)
+				}
+				if err := os.Remove(source); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+			}
+		}
+		if err := os.Remove(statusDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if remaining, err := os.ReadDir(legacyRoot); err == nil {
+		for _, ent := range remaining {
+			if ent.Name() == ".tmp" {
+				tmpEntries, readErr := os.ReadDir(filepath.Join(legacyRoot, ent.Name()))
+				if readErr != nil {
+					return readErr
+				}
+				if len(tmpEntries) > 0 {
+					return E(7, "legacy queue migration paused: queue/.tmp is not empty")
+				}
+				if removeErr := os.Remove(filepath.Join(legacyRoot, ent.Name())); removeErr != nil {
+					return removeErr
+				}
+				continue
+			}
+			return E(7, "legacy queue contains unknown entry %s", ent.Name())
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if b, err := Encode(manifest); err != nil {
+		return err
+	} else if len(manifest) > 0 {
+		if err := writeAtomic(manifestPath, b, 0600); err != nil {
+			return err
+		}
+	}
+	if files, err := os.ReadDir(legacyRoot); err == nil && len(files) == 0 {
+		_ = os.Remove(legacyRoot)
+	}
+	return nil
+}
+
+func ensureLegacyTransactionsSettled(root string) error {
+	entries, err := os.ReadDir(filepath.Join(root, "runtime", "transactions"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, ent := range entries {
+		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(root, "runtime", "transactions", ent.Name()))
+		if err != nil {
+			return err
+		}
+		var tx Transaction
+		if err := json.Unmarshal(b, &tx); err != nil {
+			return E(7, "invalid transaction %s", ent.Name())
+		}
+		if tx.Phase != "committed" {
+			return E(7, "legacy queue migration paused: transaction %s is %s; run doctor first", tx.ID, tx.Phase)
+		}
+	}
+	return nil
+}
+
+func writeRuntimePhase(root, id, phase string) error {
+	return writeAtomic(filepath.Join(root, executionDir, id+".json"), mustEncode(RuntimePhase{CardID: id, Phase: phase, UpdatedAt: Now()}), 0600)
+}
+
+func mustEncode(v any) []byte {
+	b, _ := Encode(v)
+	return b
+}
+
+func (s *State) cardPath(id string) string {
+	return filepath.Join(s.Root, cardStoreDir, id+".json")
+}
+
+func (s *State) runtimePhase(id string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(s.Root, executionDir, id+".json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var phase RuntimePhase
+	if err := json.Unmarshal(b, &phase); err != nil || phase.CardID != id || !statusValid(phase.Phase) {
+		return "", E(7, "invalid runtime phase for %s", id)
+	}
+	return phase.Phase, nil
+}
+
+func (s *State) setRuntimePhase(id, phase string) error {
+	if !statusValid(phase) {
+		return E(2, "invalid runtime phase %q", phase)
+	}
+	return writeRuntimePhase(s.Root, id, phase)
 }
 
 func sameLinearBinding(a, b LinearConfig) bool {
@@ -238,24 +448,21 @@ func (s *State) Locate(id string) (string, string, error) {
 	if !cardIDPattern.MatchString(id) {
 		return "", "", E(2, "invalid card id")
 	}
-	var foundStatus, foundPath string
-	for _, status := range Statuses {
-		path := filepath.Join(s.Root, "queue", status, id+".json")
-		rel, _ := s.rel(path)
-		_, err := s.FS.Stat(rel)
-		if err == nil {
-			if foundPath != "" {
-				return "", "", E(7, "card %s exists in multiple statuses", id)
-			}
-			foundStatus, foundPath = status, path
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return "", "", err
+	path := s.cardPath(id)
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "", E(2, "card %s not found", id)
 		}
+		return "", "", err
 	}
-	if foundPath == "" {
-		return "", "", E(2, "card %s not found", id)
+	phase, err := s.runtimePhase(id)
+	if err != nil {
+		return "", "", err
 	}
-	return foundStatus, foundPath, nil
+	if phase == "" {
+		phase = "todo"
+	}
+	return phase, path, nil
 }
 
 func (s *State) ReadCard(id string) (string, map[string]any, *Card, error) {
@@ -269,6 +476,9 @@ func (s *State) ReadCard(id string) (string, map[string]any, *Card, error) {
 		return "", nil, nil, err
 	}
 	raw, card, err := DecodeCard(b, &s.Config)
+	if err == nil {
+		card.Status = status
+	}
 	return status, raw, card, err
 }
 
@@ -282,31 +492,38 @@ func (s *State) AllCards() ([]struct {
 		Raw          map[string]any
 		Card         *Card
 	}
-	for _, status := range Statuses {
-		entries, err := fs.ReadDir(s.FS.FS(), filepath.ToSlash(filepath.Join("queue", status)))
+	entries, err := fs.ReadDir(s.FS.FS(), cardStoreDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, ent := range entries {
+		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(ent.Name(), ".json")
+		path := s.cardPath(id)
+		rel, _ := s.rel(path)
+		b, err := s.FS.ReadFile(rel)
 		if err != nil {
 			return nil, err
 		}
-		for _, ent := range entries {
-			if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".json") {
-				continue
-			}
-			path := filepath.Join(s.Root, "queue", status, ent.Name())
-			rel, _ := s.rel(path)
-			b, err := s.FS.ReadFile(rel)
-			if err != nil {
-				return nil, err
-			}
-			raw, card, err := DecodeCard(b, &s.Config)
-			if err != nil {
-				return nil, E(7, "%s: %v", path, err)
-			}
-			out = append(out, struct {
-				Status, Path string
-				Raw          map[string]any
-				Card         *Card
-			}{status, path, raw, card})
+		raw, card, err := DecodeCard(b, &s.Config)
+		if err != nil {
+			return nil, E(7, "%s: %v", path, err)
 		}
+		phase, err := s.runtimePhase(id)
+		if err != nil {
+			return nil, err
+		}
+		if phase == "" {
+			phase = "todo"
+		}
+		card.Status = phase
+		out = append(out, struct {
+			Status, Path string
+			Raw          map[string]any
+			Card         *Card
+		}{phase, path, raw, card})
 	}
 	return out, nil
 }

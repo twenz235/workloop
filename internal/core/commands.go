@@ -24,14 +24,14 @@ func (s *State) List(status, linear string) ([]map[string]any, error) {
 	var out []map[string]any
 	for _, x := range cards {
 		boardStatus := s.boardStatus(x.Card, x.Status)
-		if status != "" && status != boardStatus && status != x.Status && !containsString(x.Card.LinearLabels, status) {
+		if status != "" && status != boardStatus && !containsString(x.Card.LinearLabels, status) {
 			continue
 		}
 		if linear != "" && x.Card.LinearIssueUUID != linear && x.Card.LinearIssueID != linear {
 			continue
 		}
 		out = append(out, map[string]any{
-			"id": x.Card.ID, "title": x.Card.Title, "status": boardStatus, "runtime_status": x.Status,
+			"id": x.Card.ID, "title": x.Card.Title, "status": boardStatus,
 			"linear_state": x.Card.LinearState, "linear_labels": x.Card.LinearLabels,
 			"priority": x.Card.Priority, "linear_url": x.Card.LinearURL, "pr": x.Card.PR,
 			"stale": x.Card.Stale, "spec_changed": x.Card.SpecChanged,
@@ -60,11 +60,14 @@ func (s *State) Status(role string) (map[string]any, error) {
 	}
 	counts := map[string]int{}
 	for _, status := range Statuses {
-		entries, err := os.ReadDir(filepath.Join(s.Root, "queue", status))
-		if err != nil {
-			return nil, err
-		}
-		counts[status] = len(entries)
+		counts[status] = 0
+	}
+	cards, err := s.AllCards()
+	if err != nil {
+		return nil, err
+	}
+	for _, card := range cards {
+		counts[card.Status]++
 	}
 	stop := false
 	if _, err := os.Stat(filepath.Join(s.Root, "STOP")); err == nil {
@@ -95,7 +98,14 @@ func (s *State) Status(role string) (map[string]any, error) {
 	if role == "dev" {
 		statuses = []string{"rework", "todo"}
 	}
-	candidates, _ := s.candidates(statuses)
+	linearSnapshotStale := false
+	if err := s.requireFreshLinearSnapshot(); err != nil {
+		linearSnapshotStale = s.Config.Linear.Enabled
+	}
+	var candidates []cardItem
+	if !linearSnapshotStale {
+		candidates, _ = s.candidates(statuses)
+	}
 	reservations, _ := s.activeReservations()
 	claimable := []string{}
 	blockedConflict := []string{}
@@ -110,12 +120,15 @@ func (s *State) Status(role string) (map[string]any, error) {
 	if slots < 0 {
 		slots = 0
 	}
-	return map[string]any{"counts": boardCounts, "runtime_counts": counts, "in_flight": counts["claimed-dev"] + counts["in_review"] + counts["claimed-qa"], "open_prs": openPRs, "slots_free": slots, "claimable_now": claimable, "blocked_by_conflict": blockedConflict, "backpressure": s.inFlight() >= s.Config.Limits.MaxInFlight || openPRs >= s.Config.Limits.MaxOpenPRs, "stop": stop, "deadline_passed": deadline, "peer": peer}, nil
+	return map[string]any{"counts": boardCounts, "runtime_counts": counts, "in_flight": counts["claimed-dev"] + counts["in_review"] + counts["claimed-qa"], "open_prs": openPRs, "slots_free": slots, "claimable_now": claimable, "blocked_by_conflict": blockedConflict, "linear_snapshot_stale": linearSnapshotStale, "backpressure": s.inFlight() >= s.Config.Limits.MaxInFlight || openPRs >= s.Config.Limits.MaxOpenPRs, "stop": stop, "deadline_passed": deadline, "peer": peer}, nil
 }
 
 func (s *State) boardStatus(c *Card, runtimeStatus string) string {
 	if c.LinearState != "" {
 		return c.LinearState
+	}
+	if s.Config.Linear.Enabled {
+		return "Unknown"
 	}
 	switch runtimeStatus {
 	case "todo", "blocked":
@@ -381,21 +394,27 @@ func (s *State) Reconcile(role string) (map[string]any, error) {
 	if role != "dev" && role != "qa" {
 		return nil, E(2, "role must be dev or qa")
 	}
+	if err := s.requireFreshLinearSnapshot(); err != nil {
+		// Recovery must not turn an old local lease into a new Linear state
+		// while the authoritative snapshot is unavailable. Active workers can
+		// continue; the next successful sync will make reconciliation safe.
+		return nil, err
+	}
 	moved := []string{}
 	status := "claimed-" + role
 	limit := s.Config.Dev.ClaimStaleMin
 	if role == "qa" {
 		limit = s.Config.QA.ClaimStaleMin
 	}
-	entries, err := os.ReadDir(filepath.Join(s.Root, "queue", status))
+	cards, err := s.AllCards()
 	if err != nil {
 		return nil, err
 	}
-	for _, ent := range entries {
-		if !strings.HasSuffix(ent.Name(), ".json") {
+	for _, item := range cards {
+		if item.Status != status {
 			continue
 		}
-		id := strings.TrimSuffix(ent.Name(), ".json")
+		id := item.Card.ID
 		_, _, _, c, e := s.readCardPath(id)
 		if e != nil {
 			return nil, e
@@ -466,9 +485,27 @@ func (s *State) Reconcile(role string) (map[string]any, error) {
 				to = "needs_attention"
 			}
 		}
-		_, e = s.withMoveInternal(id, to, role+"/reconcile", note, patch)
+		actor := role + "/reconcile"
+		if s.Config.Linear.Enabled && to != "needs_attention" {
+			// A stale-claim recovery is local bookkeeping. Do not echo a
+			// guessed state back to Linear; the fresh remote snapshot remains
+			// the board authority.
+			if remotePhase := s.linearExecutionPhase(c.LinearState); remotePhase != "" {
+				to = remotePhase
+			} else {
+				to = "needs_attention"
+				note = "Linear state is unavailable for stale-claim recovery"
+			}
+			if to != "needs_attention" {
+				actor = "system/sync-reconcile"
+			}
+		}
+		_, e = s.withMoveInternal(id, to, actor, note, patch)
 		if e != nil {
 			return nil, e
+		}
+		if s.Config.Linear.Enabled && (to == "done" || to == "cancelled") {
+			_ = s.releaseReservation(id)
 		}
 		moved = append(moved, id)
 	}
