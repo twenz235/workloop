@@ -4,6 +4,10 @@ Workloop is a local, crash-recoverable AI development workflow. It imports appro
 
 The command-line interface is `loopctl`. Workloop currently supports macOS, GitHub, Linear, and either Codex or Claude as the worker provider. One state root is permanently bound to one Git repository.
 
+## สรุปภาษาไทย
+
+Workloop คือระบบจัดคิวงานพัฒนาด้วย AI บนเครื่อง โดยรับงานที่ groom และอนุมัติแล้วจาก Linear จากนั้นให้ Codex หรือ Claude Code ทำงาน Dev เปิด PR และให้ QA ตรวจสอบก่อน merge เข้า branch `dev` อัตโนมัติ ระบบไม่ deploy หรือเลื่อนงานไป environment อื่น เพราะขั้นตอนนั้นยังเป็นหน้าที่ของคน
+
 ## How the pieces fit together
 
 Workloop is an orchestrator; it does not replace an AI coding agent, issue tracker, or Git host. A working setup uses all of these components:
