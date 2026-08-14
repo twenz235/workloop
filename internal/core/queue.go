@@ -67,7 +67,12 @@ func (s *State) Add(data []byte, actor string) (map[string]any, error) {
 
 func contractHash(raw map[string]any) string {
 	contract := map[string]any{}
-	for _, k := range []string{"problem", "desired_outcome", "out_of_scope", "repo", "repo_path", "base", "tier", "touches", "acceptance", "verification", "depends_on", "risk", "rollback_notes"} {
+	for _, k := range []string{"problem", "desired_outcome", "out_of_scope", "repo", "repo_path", "base", "tier", "touches", "acceptance", "verification", "depends_on", "visuals", "risk", "rollback_notes"} {
+		if k == "visuals" {
+			if _, exists := raw[k]; !exists {
+				continue
+			}
+		}
 		contract[k] = raw[k]
 	}
 	b, _ := json.Marshal(contract)

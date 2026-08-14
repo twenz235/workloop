@@ -40,7 +40,7 @@ func TestLinearSyncImportsReadyIssueIdempotently(t *testing.T) {
 			response = `{"data":{"issueUpdate":{"success":true}}}`
 		default:
 			desc := fmt.Sprintf("Summary\n```loop-card\n{\"problem\":\"p\",\"desired_outcome\":\"o\",\"out_of_scope\":[\"x\"],\"repo\":%q,\"repo_path\":%q,\"base\":\"dev\",\"tier\":\"L1\",\"touches\":[\"a.go\"],\"acceptance\":[\"works\"],\"verification\":[\"go test ./...\"],\"depends_on\":[],\"risk\":{\"level\":\"low\"},\"rollback_notes\":\"revert\",\"approved_at\":\"now\",\"approved_by\":\"u\"}\n```", s.Config.Repo, s.Config.RepoPath)
-			response = fmt.Sprintf(`{"data":{"team":{"issues":{"nodes":[{"id":"uuid-1","identifier":"FLO-1","title":"Issue","description":%q,"url":"https://linear.test/1","updatedAt":"2026-01-01T00:00:00Z","priority":1,"state":{"name":"Backlog"},"labels":{"nodes":[{"name":"loop:ready"}]}}]}}}}`, desc)
+			response = fmt.Sprintf(`{"data":{"team":{"issues":{"nodes":[{"id":"uuid-1","identifier":"FLO-1","title":"Issue","description":%q,"url":"https://linear.test/1","updatedAt":"2026-01-01T00:00:00Z","priority":1,"state":{"name":"Backlog"},"project":{"id":"project-1","name":"Acme"},"labels":{"nodes":[{"name":"loop:ready"},{"name":"type:feature"}]}}]}}}}`, desc)
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 	})}
@@ -106,7 +106,9 @@ func TestGroomCreateRequiresApprovalAndCreatesReadyBacklog(t *testing.T) {
 		case strings.Contains(q, "TeamStates"):
 			response = `{"data":{"team":{"states":{"nodes":[{"id":"backlog-id","name":"Backlog"}]}}}}`
 		case strings.Contains(q, "TeamLabels"):
-			response = `{"data":{"team":{"labels":{"nodes":[{"id":"ready-id","name":"loop:ready"}]}}}}`
+			response = `{"data":{"team":{"labels":{"nodes":[{"id":"ready-id","name":"loop:ready"},{"id":"feature-id","name":"type:feature"}]}}}}`
+		case strings.Contains(q, "TeamProjects"):
+			response = `{"data":{"team":{"projects":{"nodes":[{"id":"project-1","name":"Acme"}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`
 		default:
 			createBody = q
 			response = `{"data":{"issueCreate":{"success":true,"issue":{"id":"u1","identifier":"FLO-9","title":"Ready card","url":"https://linear.test/FLO-9","updatedAt":"now","state":{"name":"Backlog"}}}}}`
@@ -114,7 +116,7 @@ func TestGroomCreateRequiresApprovalAndCreatesReadyBacklog(t *testing.T) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{}}, nil
 	})}
 	t.Cleanup(func() { defaultLinearHTTPClient = old })
-	input := fmt.Sprintf(`{"title":"Ready card","problem":"p","desired_outcome":"o","out_of_scope":["x"],"repo":%q,"repo_path":%q,"base":"dev","tier":"L1","touches":["a"],"acceptance":["works"],"verification":["test"],"depends_on":[],"priority":1,"risk":{"level":"low"},"rollback_notes":"revert"}`, s.Config.Repo, s.Config.RepoPath)
+	input := fmt.Sprintf(`{"title":"Ready card","problem":"p","desired_outcome":"o","out_of_scope":["x"],"repo":%q,"repo_path":%q,"base":"dev","tier":"L1","touches":["a"],"acceptance":["works"],"verification":["test"],"depends_on":[],"priority":1,"work_type":"feature","linear_project_id":"project-1","linear_project":"Acme","visuals":[{"alt":"Pricing flow","url":"https://example.com/pricing.png","description":"Current pricing flow"}],"risk":{"level":"low"},"rollback_notes":"revert"}`, s.Config.Repo, s.Config.RepoPath)
 	if _, err := s.GroomCreate(context.Background(), []byte(input), ""); ExitCode(err) != 2 {
 		t.Fatalf("approval exit=%d err=%v", ExitCode(err), err)
 	}
@@ -122,11 +124,23 @@ func TestGroomCreateRequiresApprovalAndCreatesReadyBacklog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["status"] != "Backlog" || result["label"] != "loop:ready" {
+	if result["status"] != "Backlog" || result["project"] != "Acme" || result["priority"] != 1 {
 		t.Fatalf("result=%v", result)
 	}
-	if !strings.Contains(createBody, "ready-id") || !strings.Contains(createBody, "loop-card") {
+	if !strings.Contains(createBody, "ready-id") || !strings.Contains(createBody, "feature-id") || !strings.Contains(createBody, `"projectId":"project-1"`) || !strings.Contains(createBody, `"priority":1`) || !strings.Contains(createBody, "- [ ] works") || !strings.Contains(createBody, "pricing.png") || !strings.Contains(createBody, "loop-card") {
 		t.Fatalf("create body missing contract: %s", createBody)
+	}
+}
+
+func TestWorkTypeRequiresExactlyOneLabel(t *testing.T) {
+	if _, err := workTypeFromLabels([]string{"loop:ready"}); ExitCode(err) != 2 {
+		t.Fatalf("missing type exit=%d err=%v", ExitCode(err), err)
+	}
+	if _, err := workTypeFromLabels([]string{"type:feature", "type:bug"}); ExitCode(err) != 2 {
+		t.Fatalf("multiple types exit=%d err=%v", ExitCode(err), err)
+	}
+	if got, err := workTypeFromLabels([]string{"loop:ready", "type:maintenance"}); err != nil || got != "maintenance" {
+		t.Fatalf("got=%q err=%v", got, err)
 	}
 }
 

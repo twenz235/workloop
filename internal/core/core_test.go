@@ -69,6 +69,40 @@ func addTestCard(t *testing.T, s *State, id string, touches []string) {
 	}
 }
 
+func TestContractHashPreservesCardsWithoutVisuals(t *testing.T) {
+	var raw map[string]any
+	if err := json.Unmarshal(testCard("hash", []string{"a.go"}), &raw); err != nil {
+		t.Fatal(err)
+	}
+	legacy := map[string]any{}
+	for _, key := range []string{"problem", "desired_outcome", "out_of_scope", "repo", "repo_path", "base", "tier", "touches", "acceptance", "verification", "depends_on", "risk", "rollback_notes"} {
+		legacy[key] = raw[key]
+	}
+	b, _ := json.Marshal(legacy)
+	if got, want := contractHash(raw), Hash(b); got != want {
+		t.Fatalf("legacy hash changed: got=%s want=%s", got, want)
+	}
+	raw["visuals"] = []any{map[string]any{"alt": "flow", "url": "https://example.com/flow.png", "description": "flow"}}
+	if got := contractHash(raw); got == Hash(b) {
+		t.Fatalf("visual did not change contract hash: %s", got)
+	}
+}
+
+func TestVisualURLValidationRejectsUnsafeMarkdown(t *testing.T) {
+	s := testState(t)
+	var raw map[string]any
+	if err := json.Unmarshal(testCard("visual", []string{"a.go"}), &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["repo"] = s.Config.Repo
+	raw["repo_path"] = s.Config.RepoPath
+	raw["visuals"] = []any{map[string]any{"alt": "flow", "url": "https://example.com/a.png\n## injected", "description": "flow"}}
+	b, _ := json.Marshal(raw)
+	if _, _, err := DecodeCard(b, &s.Config); ExitCode(err) != 2 {
+		t.Fatalf("unsafe visual exit=%d err=%v", ExitCode(err), err)
+	}
+}
+
 func TestInitIdempotentAndRepoBinding(t *testing.T) {
 	s := testState(t)
 	again, err := Init("test", s.Config.RepoPath, s.Root)

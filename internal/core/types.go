@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -116,6 +117,10 @@ type Card struct {
 	Verification    []string        `json:"verification"`
 	DependsOn       []string        `json:"depends_on"`
 	Priority        int             `json:"priority"`
+	WorkType        string          `json:"work_type,omitempty"`
+	LinearProjectID string          `json:"linear_project_id,omitempty"`
+	LinearProject   string          `json:"linear_project,omitempty"`
+	Visuals         []Visual        `json:"visuals,omitempty"`
 	Risk            json.RawMessage `json:"risk"`
 	RollbackNotes   string          `json:"rollback_notes"`
 	LinearIssueID   string          `json:"linear_issue_id"`
@@ -144,6 +149,12 @@ type Card struct {
 	QAFindings      []Finding       `json:"qa_findings"`
 	QAEvidence      []string        `json:"qa_evidence,omitempty"`
 	History         []History       `json:"history"`
+}
+
+type Visual struct {
+	Alt         string `json:"alt"`
+	URL         string `json:"url"`
+	Description string `json:"description"`
 }
 
 type Finding struct {
@@ -228,6 +239,20 @@ func ValidateCard(c *Card, cfg *Config) error {
 	}
 	if c.Priority < 0 || c.Priority > 4 {
 		return E(2, "priority must be 0..4")
+	}
+	if c.WorkType != "" || c.LinearProjectID != "" || c.LinearProject != "" {
+		if c.WorkType != "feature" && c.WorkType != "bug" && c.WorkType != "maintenance" {
+			return E(2, "work_type must be feature, bug or maintenance")
+		}
+		if strings.TrimSpace(c.LinearProjectID) == "" || strings.TrimSpace(c.LinearProject) == "" {
+			return E(2, "linear_project_id and linear_project are required")
+		}
+	}
+	for _, visual := range c.Visuals {
+		parsed, err := url.ParseRequestURI(visual.URL)
+		if strings.TrimSpace(visual.Alt) == "" || strings.TrimSpace(visual.Description) == "" || err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || strings.ContainsAny(visual.URL, "\r\n<>") {
+			return E(2, "each visual requires alt, description and an https URL")
+		}
 	}
 	if cfg != nil && (c.Repo != cfg.Repo || filepath.Clean(c.RepoPath) != cfg.RepoPath || c.Base != cfg.Base) {
 		return E(2, "card repo/base does not match immutable state binding")

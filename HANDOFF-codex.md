@@ -165,6 +165,16 @@ err = root.Remove(src)          // link สำเร็จแล้วค่อ�
   "verification": ["pnpm install", "pnpm typecheck", "pnpm build"],
   "depends_on": [],                    // Linear UUID; ต้อง done ก่อน
   "priority": 2,
+  "work_type": "maintenance",         // feature|bug|maintenance; ตรงกับ type:* label
+  "linear_project_id": "linear-project-uuid",
+  "linear_project": "Platform",
+  "visuals": [
+    {
+      "alt": "dependency flow",
+      "url": "https://example.com/dependency-flow.png",
+      "description": "แผนภาพ dependency ปัจจุบันที่ต้องรักษาพฤติกรรมเดิม"
+    }
+  ],
   "risk": {"level": "medium", "reason": "แตะ dependency กลาง"},
   "rollback_notes": "revert merge commit ของ PR นี้",
   "linear_issue_id": "ARU-123",
@@ -210,6 +220,8 @@ err = root.Remove(src)          // link สำเร็จแล้วค่อ�
 5. dependency อ้าง Linear UUID ที่มีอยู่จริงและไม่มี cycle
 6. งานพอดีกับ worker หนึ่งตัว; ถ้าไม่พอดีต้อง preview การแตก sub-issues และ dependency ก่อนสร้าง
 7. ไม่มีคำถาม blocking ค้างอยู่ และผู้ใช้ยืนยัน preview แบบ explicit
+8. ระบุ work type เพียงหนึ่งค่า (`feature`, `bug`, `maintenance`), Linear project ที่มีอยู่จริง และ priority 1–4 (ห้าม No priority)
+9. acceptance แสดงเป็น Markdown checklist สำหรับคน และคง array เดิมใน `loop-card`; ภาพ/diagram ถ้ามี ต้องมี HTTPS URL, alt text และคำอธิบาย ห้าม local path/base64/URL ที่มี secret
 
 ถ้ายังไม่ผ่าน ให้ `/groom` สร้าง/อัปเดต issue ใน Backlog โดย **ไม่ติด `loop:ready`**. ห้าม `loopctl sync` นำเข้า issue ที่ไม่ผ่าน DoR แม้มี label จากการติดผิด
 
@@ -219,7 +231,7 @@ Linear description ต้องมี human-readable summary และ fenced bl
 
 ตอน import ครั้งแรกให้ derive `id` จาก Linear identifier เป็น lowercase และเก็บค่านั้น immutable; ถ้าชนกับ id เดิมแต่ UUID ต่างกัน ให้เติม suffix hash จาก UUID ภายในเพดาน 32 ตัวอักษร. การ sync/retry lookup ด้วย `linear_issue_uuid` เสมอ ไม่ derive id ใหม่
 
-`contract_hash` คำนวณ SHA-256 จาก canonical JSON ของ `problem`, `desired_outcome`, `out_of_scope`, `repo`, `repo_path`, `base`, `tier`, `touches`, `acceptance`, `verification`, `depends_on`, `risk`, `rollback_notes` เท่านั้น. ต้อง sort object keys แต่รักษาลำดับ array. `source_revision` ใช้สังเกตการณ์/polling เท่านั้น; status, label, comment, assignee หรือ `updatedAt` ที่เปลี่ยนโดยระบบต้องไม่ทำให้ `contract_hash` เปลี่ยน
+`contract_hash` คำนวณ SHA-256 จาก canonical JSON ของ `problem`, `desired_outcome`, `out_of_scope`, `repo`, `repo_path`, `base`, `tier`, `touches`, `acceptance`, `verification`, `depends_on`, `visuals` (เมื่อมี), `risk`, `rollback_notes` เท่านั้น. ต้อง sort object keys แต่รักษาลำดับ array. การ์ดเก่าที่ไม่มี `visuals` ต้องคง hash เดิมเพื่อรองรับการอัปเกรด. `source_revision` ใช้สังเกตการณ์/polling เท่านั้น; status, type label, project, priority, comment, assignee หรือ `updatedAt` ที่เปลี่ยนโดยระบบต้องไม่ทำให้ `contract_hash` เปลี่ยน
 
 **กฎของ `status`:** เป็น mirror ไว้ให้คนอ่านสบาย. **location คือความจริง** — ถ้าสองอย่างไม่ตรงกัน ให้เชื่อโฟลเดอร์แล้วแก้ `status` ให้ตรง พร้อม log warning. `loopctl doctor` ต้องตรวจข้อนี้ทั้งระบบ
 
@@ -835,7 +847,7 @@ Runner binding ที่ยืนยันแล้ว:
 - workspace `Acme` (`00000000-0000-4000-8000-000000000001`)
 - team `ENG` (`00000000-0000-4000-8000-000000000002`)
 - statuses: `Backlog`, `Todo`, `In Progress`, `In Review`, `Done`, `Canceled`, `Duplicate`
-- labels: `loop:ready` และ `loop:needs-attention`
+- labels: `loop:ready`, `loop:needs-attention`, `type:feature`, `type:bug` และ `type:maintenance`
 
 ---
 

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,7 @@ type linearIssue struct {
 	ID, Identifier, Title, Description, URL, UpdatedAt, StateName string
 	Labels                                                        []string
 	Priority                                                      int
+	ProjectID, ProjectName                                        string
 }
 
 func (s *State) linearClient() (*linearClient, error) {
@@ -98,7 +100,7 @@ func (c *linearClient) graphql(ctx context.Context, query string, variables any,
 }
 
 func (c *linearClient) issues(ctx context.Context, teamID string) ([]linearIssue, error) {
-	const q = `query LoopIssues($team: String!, $after: String) { team(id: $team) { issues(first: 100, after: $after, includeArchived: true) { nodes { id identifier title description url updatedAt priority state { name } labels { nodes { name } } } pageInfo { hasNextPage endCursor } } } }`
+	const q = `query LoopIssues($team: String!, $after: String) { team(id: $team) { issues(first: 100, after: $after, includeArchived: true) { nodes { id identifier title description url updatedAt priority state { name } project { id name } labels { nodes { name } } } pageInfo { hasNextPage endCursor } } } }`
 	out := []linearIssue{}
 	var after any = nil
 	for {
@@ -109,6 +111,7 @@ func (c *linearClient) issues(ctx context.Context, teamID string) ([]linearIssue
 						ID, Identifier, Title, Description, URL, UpdatedAt string
 						Priority                                           int
 						State                                              struct{ Name string }
+						Project                                            struct{ ID, Name string }
 						Labels                                             struct{ Nodes []struct{ Name string } }
 					}
 					PageInfo struct {
@@ -122,7 +125,7 @@ func (c *linearClient) issues(ctx context.Context, teamID string) ([]linearIssue
 			return nil, err
 		}
 		for _, n := range data.Team.Issues.Nodes {
-			v := linearIssue{ID: n.ID, Identifier: n.Identifier, Title: n.Title, Description: n.Description, URL: n.URL, UpdatedAt: n.UpdatedAt, Priority: n.Priority, StateName: n.State.Name}
+			v := linearIssue{ID: n.ID, Identifier: n.Identifier, Title: n.Title, Description: n.Description, URL: n.URL, UpdatedAt: n.UpdatedAt, Priority: n.Priority, StateName: n.State.Name, ProjectID: n.Project.ID, ProjectName: n.Project.Name}
 			for _, l := range n.Labels.Nodes {
 				v.Labels = append(v.Labels, l.Name)
 			}
@@ -207,13 +210,43 @@ func parseLoopCard(issue linearIssue, cfg *Config) ([]byte, error) {
 	raw["linear_issue_uuid"] = issue.ID
 	raw["linear_url"] = issue.URL
 	raw["source_revision"] = issue.UpdatedAt
+	if issue.Priority < 1 || issue.Priority > 4 {
+		return nil, E(2, "%s must have Urgent, High, Medium or Low priority", issue.Identifier)
+	}
 	raw["priority"] = issue.Priority
+	if issue.ProjectID == "" || issue.ProjectName == "" {
+		return nil, E(2, "%s must belong to a Linear project", issue.Identifier)
+	}
+	raw["linear_project_id"] = issue.ProjectID
+	raw["linear_project"] = issue.ProjectName
+	workType, err := workTypeFromLabels(issue.Labels)
+	if err != nil {
+		return nil, E(2, "%s %v", issue.Identifier, err)
+	}
+	raw["work_type"] = workType
 	raw["contract_hash"] = contractHash(raw)
 	out, _ := json.Marshal(raw)
 	if _, _, err := DecodeCard(out, cfg); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+func workTypeFromLabels(labels []string) (string, error) {
+	found := ""
+	for _, candidate := range []string{"feature", "bug", "maintenance"} {
+		if !containsString(labels, "type:"+candidate) {
+			continue
+		}
+		if found != "" {
+			return "", E(2, "must have exactly one work type label")
+		}
+		found = candidate
+	}
+	if found == "" {
+		return "", E(2, "must have one of type:feature, type:bug or type:maintenance")
+	}
+	return found, nil
 }
 func deriveCardID(identifier, uuid string) string {
 	id := strings.ToLower(identifier)
@@ -384,7 +417,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 							continue
 						}
 						patch := map[string]any{}
-						for _, k := range []string{"problem", "desired_outcome", "out_of_scope", "repo", "repo_path", "base", "tier", "touches", "acceptance", "verification", "depends_on", "risk", "rollback_notes", "contract_hash", "source_revision"} {
+						for _, k := range []string{"problem", "desired_outcome", "out_of_scope", "repo", "repo_path", "base", "tier", "touches", "acceptance", "verification", "depends_on", "visuals", "risk", "rollback_notes", "contract_hash", "source_revision"} {
 							patch[k] = newRaw[k]
 						}
 						patch["hot"] = loopglob.PatternsOverlap(newCard.Touches, s.Config.HotPaths)
@@ -401,6 +434,10 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 							attention = append(attention, issue.Identifier)
 						}
 					}
+				}
+			} else if existing.Status != "needs_attention" {
+				if _, moveErr := s.withMoveInternal(existing.Card.ID, "needs_attention", "system/sync", e.Error(), map[string]any{"spec_changed": true}); moveErr == nil {
+					attention = append(attention, issue.Identifier)
 				}
 			}
 			continue
@@ -643,6 +680,19 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 	raw["source_revision"] = Now()
 	raw["approved_at"] = Now()
 	raw["approved_by"] = approvedBy
+	priority, ok := raw["priority"].(float64)
+	if !ok || priority < 1 || priority > 4 || priority != float64(int(priority)) {
+		return nil, E(2, "priority must be 1..4 (Urgent, High, Medium or Low)")
+	}
+	workType, _ := raw["work_type"].(string)
+	if workType != "feature" && workType != "bug" && workType != "maintenance" {
+		return nil, E(2, "work_type must be feature, bug or maintenance")
+	}
+	projectID, _ := raw["linear_project_id"].(string)
+	projectName, _ := raw["linear_project"].(string)
+	if projectID == "" || projectName == "" {
+		return nil, E(2, "linear_project_id and linear_project are required")
+	}
 	b, _ := json.Marshal(raw)
 	if _, _, err := DecodeCard(b, &s.Config); err != nil {
 		return nil, err
@@ -660,22 +710,41 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 	cardBlock, _ := json.MarshalIndent(raw, "", "  ")
 	problem, _ := raw["problem"].(string)
 	outcome, _ := raw["desired_outcome"].(string)
-	description := fmt.Sprintf("## Problem\n%s\n\n## Desired outcome\n%s\n\n```loop-card\n%s\n```", problem, outcome, cardBlock)
+	acceptance, _ := raw["acceptance"].([]any)
+	description := fmt.Sprintf("## Problem\n%s\n\n## Desired outcome\n%s\n\n## Acceptance criteria\n%s%s\n\n```loop-card\n%s\n```", problem, outcome, markdownChecklist(acceptance), markdownVisuals(raw["visuals"]), cardBlock)
 	client, err := s.linearClient()
 	if err != nil {
 		return nil, err
 	}
 	if existing, ok, e := client.findIssue(ctx, opID); e == nil && ok {
-		existing["label"] = s.Config.Linear.ReadyLabel
+		existing["labels"] = []string{s.Config.Linear.ReadyLabel, "type:" + workType}
 		return existing, nil
+	}
+	projects, err := s.LinearProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	projectValid := false
+	for _, project := range projects {
+		if project.ID == projectID && project.Name == projectName {
+			projectValid = true
+			break
+		}
+	}
+	if !projectValid {
+		return nil, E(2, "Linear project %q (%s) is not available to team %s", projectName, projectID, s.Config.Linear.Team)
 	}
 	backlogID, err := s.linearStateID(ctx, client, s.Config.Linear.StatusMap["backlog"])
 	if err != nil {
 		return nil, E(8, "Linear backlog lookup failed: %v", err)
 	}
-	labelID, err := s.linearLabelID(ctx, client, s.Config.Linear.ReadyLabel)
+	readyLabelID, err := s.linearLabelID(ctx, client, s.Config.Linear.ReadyLabel)
 	if err != nil {
 		return nil, E(8, "Linear label lookup failed: %v", err)
+	}
+	typeLabelID, err := s.linearLabelID(ctx, client, "type:"+workType)
+	if err != nil {
+		return nil, E(8, "Linear work type label lookup failed: %v", err)
 	}
 	const q = `mutation CreateGroomedIssue($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier title url updatedAt state { name } } } }`
 	var response struct {
@@ -687,10 +756,10 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 			}
 		}
 	}
-	input := map[string]any{"id": opID, "teamId": s.Config.Linear.TeamID, "title": title, "description": description, "stateId": backlogID, "labelIds": []string{labelID}}
+	input := map[string]any{"id": opID, "teamId": s.Config.Linear.TeamID, "title": title, "description": description, "stateId": backlogID, "labelIds": []string{readyLabelID, typeLabelID}, "projectId": projectID, "priority": int(priority)}
 	if err := client.graphql(ctx, q, map[string]any{"input": input}, &response); err != nil {
 		if existing, ok, _ := client.findIssue(ctx, opID); ok {
-			existing["label"] = s.Config.Linear.ReadyLabel
+			existing["labels"] = []string{s.Config.Linear.ReadyLabel, "type:" + workType}
 			return existing, nil
 		}
 		return nil, E(8, "Linear create failed: %v", err)
@@ -699,7 +768,82 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 		return nil, E(8, "Linear create failed")
 	}
 	i := response.IssueCreate.Issue
-	return map[string]any{"id": i.ID, "identifier": i.Identifier, "title": i.Title, "url": i.URL, "status": i.State.Name, "label": s.Config.Linear.ReadyLabel}, nil
+	return map[string]any{"id": i.ID, "identifier": i.Identifier, "title": i.Title, "url": i.URL, "status": i.State.Name, "labels": []string{s.Config.Linear.ReadyLabel, "type:" + workType}, "project": projectName, "priority": int(priority)}, nil
+}
+
+func markdownChecklist(values []any) string {
+	lines := make([]string, 0, len(values))
+	for _, value := range values {
+		item := strings.Join(strings.Fields(fmt.Sprint(value)), " ")
+		lines = append(lines, "- [ ] "+item)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func markdownVisuals(value any) string {
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return ""
+	}
+	lines := []string{"", "", "## Visual references"}
+	for _, item := range items {
+		visual, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		alt := strings.Join(strings.Fields(fmt.Sprint(visual["alt"])), " ")
+		url := strings.TrimSpace(fmt.Sprint(visual["url"]))
+		description := strings.Join(strings.Fields(fmt.Sprint(visual["description"])), " ")
+		alt = strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(alt)
+		lines = append(lines, fmt.Sprintf("![%s](<%s>)", alt, url), "", description)
+	}
+	return strings.Join(lines, "\n")
+}
+
+type LinearProjectOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (s *State) LinearProjects(ctx context.Context) ([]LinearProjectOption, error) {
+	client, err := s.linearClient()
+	if err != nil {
+		return nil, err
+	}
+	const q = `query TeamProjects($team: String!, $after: String) { team(id: $team) { projects(first: 100, after: $after) { nodes { id name } pageInfo { hasNextPage endCursor } } } }`
+	projects := []LinearProjectOption{}
+	var after any
+	for {
+		var data struct {
+			Team struct {
+				Projects struct {
+					Nodes    []LinearProjectOption
+					PageInfo struct {
+						HasNextPage bool
+						EndCursor   string
+					}
+				}
+			}
+		}
+		if err := client.graphql(ctx, q, map[string]any{"team": s.Config.Linear.TeamID, "after": after}, &data); err != nil {
+			return nil, E(8, "Linear project lookup failed: %v", err)
+		}
+		projects = append(projects, data.Team.Projects.Nodes...)
+		if !data.Team.Projects.PageInfo.HasNextPage {
+			break
+		}
+		if data.Team.Projects.PageInfo.EndCursor == "" {
+			return nil, E(8, "Linear project pagination cursor missing")
+		}
+		after = data.Team.Projects.PageInfo.EndCursor
+	}
+	sort.Slice(projects, func(i, j int) bool {
+		if projects[i].Name != projects[j].Name {
+			return projects[i].Name < projects[j].Name
+		}
+		return projects[i].ID < projects[j].ID
+	})
+	return projects, nil
 }
 
 func deterministicUUID(data []byte) string {

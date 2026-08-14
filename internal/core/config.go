@@ -40,7 +40,7 @@ func (s *State) ValidateLinear(ctx context.Context) error {
 	if _, e := s.linearStateID(ctx, c, "Canceled"); e != nil {
 		issues = append(issues, e.Error())
 	}
-	for _, name := range []string{s.Config.Linear.ReadyLabel, s.Config.Linear.NeedsAttentionLabel} {
+	for _, name := range []string{s.Config.Linear.ReadyLabel, s.Config.Linear.NeedsAttentionLabel, "type:feature", "type:bug", "type:maintenance"} {
 		if _, e := s.linearLabelID(ctx, c, name); e != nil {
 			issues = append(issues, e.Error())
 		}

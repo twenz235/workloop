@@ -15,6 +15,13 @@ Workloop is an orchestrator; it does not replace an AI coding agent, issue track
 
 In short: Linear decides **what** is ready, Codex or Claude Code performs the work, GitHub carries the reviewed change, and Workloop coordinates the lifecycle between them.
 
+## Documentation
+
+- [User Guide](docs/user-guide.md) — install, configure, run, and operate Workloop day to day.
+- [CLI Reference](docs/cli-reference.md) — complete command list, syntax, options, examples, and exit codes.
+- [Linear contract](docs/linear-contract.md) — required issue format and Linear integration behavior.
+- [Design specification](HANDOFF-codex.md) — detailed architecture, invariants, and implementation decisions.
+
 ## Workflow
 
 ```text
@@ -35,7 +42,7 @@ Groom → Linear Backlog + loop:ready → Todo → Dev → PR → QA → merge t
 - Git and GitHub CLI (`gh`), authenticated for the target repository
 - Codex CLI or Claude Code
 - A Linear API token and team with these statuses: `Backlog`, `Todo`, `In Progress`, `In Review`, `Done`, and `Canceled`
-- Linear labels `loop:ready` and `loop:needs-attention`
+- Linear labels `loop:ready`, `loop:needs-attention`, `type:feature`, `type:bug`, and `type:maintenance`
 - A local and remote `dev` branch
 
 ## Install
@@ -92,7 +99,7 @@ loopctl config set linear.sync_interval_sec 300
 
 ## Grooming
 
-The included `groom` skill clarifies a request, scopes it, previews a complete card, and waits for explicit approval before creating a Linear issue in Backlog with `loop:ready`. Normal intake is Groom → Linear → `loopctl sync`; `loopctl add` is a recovery path for validated card JSON.
+The included `groom` skill clarifies a request, scopes it, previews a complete card, and waits for explicit approval before creating a Linear issue in Backlog. Every groomed card has `loop:ready`, exactly one `type:*` label, a Linear project, priority, and acceptance checklist. Screenshots and diagrams can be supplied as grooming context and attached through safe HTTPS references. Normal intake is Groom → Linear → `loopctl sync`; `loopctl add` is a recovery path for validated card JSON.
 
 ## Operations
 
@@ -125,8 +132,6 @@ make build
 ```
 
 The test suite uses fake Linear, GitHub, and model providers. `tests/stress.sh` runs competing CLI processes and fault-injects crashes at transaction boundaries.
-
-See [docs/linear-contract.md](docs/linear-contract.md) for the integration contract and [HANDOFF-codex.md](HANDOFF-codex.md) for the complete design specification.
 
 ## License
 

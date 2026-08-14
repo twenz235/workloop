@@ -570,8 +570,19 @@ func groomCmd(s *core.State, args []string) error {
 	fs := flag.NewFlagSet("groom", flag.ContinueOnError)
 	file := fs.String("file", "", "approved card JSON")
 	by := fs.String("approved-by", "", "approver identity")
+	listProjects := fs.Bool("list-projects", false, "list available Linear projects")
 	if err := fs.Parse(args); err != nil {
 		return core.E(2, "%v", err)
+	}
+	if *listProjects {
+		if *file != "" || *by != "" {
+			return core.E(2, "--list-projects cannot be combined with card creation")
+		}
+		v, err := s.LinearProjects(context.Background())
+		if err != nil {
+			return err
+		}
+		return output(v)
 	}
 	if *file == "" {
 		return core.E(2, "--file required")
