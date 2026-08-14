@@ -857,7 +857,9 @@ Runner binding ที่ยืนยันแล้ว:
 
 อ่านเพื่อเข้าใจ *ทำไม* ไม่จำเป็นต่อการ implement แต่ช่วยตัดสินใจตอนเจอเคสที่สเปคไม่ครอบคลุม:
 
-- `plan.html` — ภาพรวม 3 เลน, ข้อจำกัดของ `/loop` (ช่วงพัก 60–3600s)
-- `dev-queue-loop.html` — ทำไมต้องเป็น queue ไม่ใช่ open-ended loop, ticket contract 4 ข้อ
-- `qa-loop-and-grooming.html` — ทางกลับของ QA 3 ชั้น, กับดักของ finding ที่ละเอียดเกินจนกลายเป็นสั่งวิธีแก้
-- `orchestrated-loops.html` — concurrency model, conflict-set, backpressure, ปัญหาที่การขนานสร้างขึ้น
+อยู่ที่ [`docs/design/`](docs/design/) — เปิดด้วยเบราว์เซอร์ (ทั้งชุดลิงก์ถึงกันเอง เริ่มที่ไฟล์ไหนก็ได้):
+
+- [`docs/design/plan.html`](docs/design/plan.html) — ภาพรวม 3 เลน, ข้อจำกัดของ `/loop` (ช่วงพัก 60–3600s)
+- [`docs/design/dev-queue-loop.html`](docs/design/dev-queue-loop.html) — ทำไมต้องเป็น queue ไม่ใช่ open-ended loop, ticket contract 4 ข้อ
+- [`docs/design/qa-loop-and-grooming.html`](docs/design/qa-loop-and-grooming.html) — ทางกลับของ QA 3 ชั้น, กับดักของ finding ที่ละเอียดเกินจนกลายเป็นสั่งวิธีแก้
+- [`docs/design/orchestrated-loops.html`](docs/design/orchestrated-loops.html) — concurrency model, conflict-set, backpressure, ปัญหาที่การขนานสร้างขึ้น
