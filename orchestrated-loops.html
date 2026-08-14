@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orchestrated Loops — 2 เซสชัน + multi-agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#faf9f6; --ink:#1c1b19; --ink-soft:#54514b; --ink-faint:#8b8781;
+    --line:#dedad2; --line-strong:#c4bfb5; --tint:#f2efe9;
+    --rose:#b0757a; --rose-bg:#f7edee;
+    --sage:#6c7f6b; --sage-bg:#eef2ed;
+    --amber:#9a7d45; --amber-bg:#f6f0e4;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:'Sarabun',-apple-system,sans-serif;font-weight:300;font-size:16px;line-height:1.75}
+  .wrap{max-width:940px;margin:0 auto;padding:64px 28px 120px}
+  code,pre,.mono{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:13.5px}
+  code{background:var(--tint);padding:1px 5px;border-radius:2px;font-weight:400}
+  pre{background:var(--tint);border:1px solid var(--line);border-radius:2px;
+    padding:16px 18px;overflow-x:auto;line-height:1.65;margin:16px 0}
+  pre code{background:none;padding:0}
+  h1{font-size:30px;font-weight:600;letter-spacing:-.01em;margin:0 0 8px}
+  h2{font-size:21px;font-weight:600;margin:64px 0 4px;padding-bottom:10px;border-bottom:1px solid var(--line-strong)}
+  h3{font-size:16.5px;font-weight:600;margin:34px 0 8px}
+  h4{font-size:15px;font-weight:600;margin:22px 0 6px;color:var(--ink-soft)}
+  p{margin:10px 0}
+  .sub{color:var(--ink-faint);font-size:14px;margin:0 0 4px}
+  .lead{color:var(--ink-soft);font-size:15.5px}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  hr{border:0;border-top:1px solid var(--line);margin:40px 0}
+  a{color:var(--ink);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
+  .toc{border:1px solid var(--line);border-radius:2px;padding:20px 24px;margin:36px 0 8px;background:#fff}
+  .toc h4{margin:0 0 10px;color:var(--ink-faint);font-size:12.5px;letter-spacing:.08em;text-transform:uppercase}
+  .toc ol{margin:0;padding-left:20px;font-size:14.5px}
+  .toc li{margin:3px 0}
+  .tw{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:2px;background:#fff}
+  table{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-weight:600;background:var(--tint);white-space:nowrap;font-size:13px;letter-spacing:.02em}
+  tr:last-child td{border-bottom:0}
+  td.mono,th.mono{font-family:'JetBrains Mono',monospace;font-size:12.5px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:20px 0}
+  .card{border:1px solid var(--line);border-radius:2px;padding:18px 20px;background:#fff}
+  .card h4{margin:0 0 4px;font-size:15px;color:var(--ink)}
+  .card .tag{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);display:block;margin-bottom:8px}
+  .card p{font-size:14px;color:var(--ink-soft);margin:6px 0}
+  .card.yes{border-left:3px solid var(--sage)}
+  .card.no{border-left:3px solid var(--rose)}
+  .b{display:inline-block;font-size:11.5px;letter-spacing:.04em;padding:2px 8px;border-radius:2px;border:1px solid;white-space:nowrap;font-weight:400}
+  .b-hi{color:var(--rose);border-color:var(--rose);background:var(--rose-bg)}
+  .b-mid{color:var(--amber);border-color:var(--amber);background:var(--amber-bg)}
+  .b-lo{color:var(--sage);border-color:var(--sage);background:var(--sage-bg)}
+  .b-n{color:var(--ink-faint);border-color:var(--line-strong);background:var(--tint)}
+  .note{border:1px solid var(--line-strong);border-left:3px solid var(--ink-soft);border-radius:2px;padding:14px 18px;margin:20px 0;background:#fff;font-size:14.5px}
+  .note.warn{border-left-color:var(--rose)}
+  .note.ok{border-left-color:var(--sage)}
+  .note strong{font-weight:600}
+  .steps{list-style:none;padding:0;margin:20px 0;counter-reset:s}
+  .steps li{counter-increment:s;position:relative;padding:0 0 20px 42px;margin:0;border-left:1px solid var(--line)}
+  .steps li:last-child{border-left-color:transparent;padding-bottom:0}
+  .steps li::before{content:counter(s);position:absolute;left:-13px;top:0;width:25px;height:25px;border-radius:50%;
+    background:var(--paper);border:1px solid var(--line-strong);color:var(--ink-soft);
+    font-size:12px;display:flex;align-items:center;justify-content:center}
+  .steps b{font-weight:600}
+  .steps .d{color:var(--ink-soft);font-size:14px;display:block;margin-top:2px}
+  .k{color:var(--ink-faint);font-size:13px}
+  .fsm{background:#fff;border:1px solid var(--line);border-radius:2px;padding:20px 22px;margin:18px 0;overflow-x:auto}
+  .fsm pre{background:none;border:0;padding:0;margin:0;font-size:13px;line-height:1.85}
+  .issue{border:1px solid var(--line);border-radius:2px;background:#fff;margin:16px 0;padding:18px 20px}
+  .issue .hd{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px}
+  .issue .hd h4{margin:0;font-size:15.5px;color:var(--ink)}
+  .issue .fix{border-top:1px solid var(--line);margin-top:12px;padding-top:12px;font-size:14.5px}
+  .issue .fix b{font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="sub">2026-08-12 · sd · ต่อจาก <a href="qa-loop-and-grooming.html">QA Loop</a> · <a href="dev-queue-loop.html">Dev Queue</a> · <a href="plan.html">แผนหลัก</a></p>
+<h1>Orchestrated Loops</h1>
+<p class="lead">2 loop แยกเซสชันเด็ดขาด + orchestrator ที่ปล่อย worker หลายตัวทำหลายการ์ดพร้อมกัน และเติม worker เองเมื่อการ์ดเพิ่ม</p>
+
+<div class="note ok">
+<strong>คำตอบของโจทย์ concurrency:</strong> ไม่ใช้ lock เลย — ใช้ <b>ownership by location</b> + <b>atomic rename</b>. แต่ละสถานะเป็นโฟลเดอร์ที่มีเจ้าของคนเดียว การ์ดคือไฟล์ที่ถูก <code>mv</code> ข้ามโฟลเดอร์ ซึ่งบน filesystem เดียวกันเป็น operation ที่แบ่งไม่ได้. ผลคือ <b>สอง loop ไม่เคยเขียนไฟล์เดียวกันเลยแม้แต่ครั้งเดียว</b> — ตรงกับที่ต่องต้องการว่า "ไม่ให้ร่วมกันเลย" โดยไม่ต้องแลกกับความถูกต้อง
+</div>
+
+<div class="toc">
+<h4>สารบัญ</h4>
+<ol>
+  <li><a href="#d">อะไรเปลี่ยนไปจากดีไซน์เดิม</a></li>
+  <li><a href="#c">Concurrency model — ไม่มี lock</a></li>
+  <li><a href="#l">Layout ของ state</a></li>
+  <li><a href="#o">Orchestrator tick</a></li>
+  <li><a href="#s">Conflict-set scheduling — <code>touches</code> คือกุญแจล็อก</a></li>
+  <li><a href="#a">Dynamic scaling + backpressure</a></li>
+  <li><a href="#w">Worker contract</a></li>
+  <li><a href="#n">ปัญหาใหม่ที่การขนานสร้างขึ้น</a></li>
+  <li><a href="#t">เดินจริง — timeline</a></li>
+  <li><a href="#r">ลำดับที่ควรทำ</a></li>
+</ol>
+</div>
+
+<h2 id="d">1 · อะไรเปลี่ยนไป</h2>
+<p>การขนานทำให้ invariant เดิม 2 ข้อใช้ไม่ได้ ต้องมีของมาแทนแบบตรงตัว ไม่ใช่แค่ยกเลิก:</p>
+
+<div class="tw">
+<table>
+<tr><th>ดีไซน์เดิม</th><th>ตอนนี้</th><th>ของที่มาแทน</th></tr>
+<tr>
+  <td><b>WIP = 1</b> — กัน diff ปนกัน</td>
+  <td>ตายแล้ว (ขนาน N ใบ)</td>
+  <td><b>worktree isolation</b> — worker แต่ละตัวได้ git worktree ของตัวเอง ไฟล์ไม่ชนกันระดับ filesystem + <b>conflict-set</b> กันการ์ดที่แตะไฟล์เดียวกันไม่ให้รันพร้อมกัน</td>
+</tr>
+<tr>
+  <td><b>คิวว่าง = stop</b></td>
+  <td>ตายแล้ว (ต้องรอการ์ดใหม่)</td>
+  <td><b>idle mode</b> — คิวว่าง = noop + backoff จนชน 3600s รอการ์ดใหม่ · จบด้วย deadline หรือ STOP เท่านั้น</td>
+</tr>
+<tr>
+  <td>queue.json ไฟล์เดียว</td>
+  <td>ตายแล้ว (2 writer)</td>
+  <td><b>1 การ์ด = 1 ไฟล์</b> ย้ายข้ามโฟลเดอร์สถานะ</td>
+</tr>
+<tr>
+  <td>loop เติมการ์ดเองไม่ได้</td>
+  <td><b>ยังอยู่</b></td>
+  <td>—  ยังเป็นกฎเหล็ก. การ์ดใหม่มาจาก <code>/groom</code> เท่านั้น</td>
+</tr>
+<tr>
+  <td>loop ไปได้สูงสุดแค่ PR</td>
+  <td><b>ยังอยู่</b></td>
+  <td>—  ขนานแล้วยิ่งต้องคุม</td>
+</tr>
+</table>
+</div>
+
+<h3>1.1 orchestrator ไม่ต้องเป็น agent อีกชั้น</h3>
+<p>ต่องบอกว่า "ให้ loop สร้าง orchestra multi-agent" — ผมออกแบบให้ <b>tick ของ loop เองคือ orchestrator</b> ไม่แทรก agent ชั้นกลางเพิ่ม เหตุผล:</p>
+<ul>
+  <li>agent ชั้นกลางจบเทิร์นแล้วหายไป → ต้อง spawn ใหม่ทุก tick อยู่ดี = ไม่ได้ความต่อเนื่องอะไรเพิ่ม แต่จ่ายค่า spawn ทุกรอบ</li>
+  <li>state ต้อง sync ข้ามชั้นเพิ่มอีกหนึ่งชั้น = จุดพังเพิ่มโดยไม่ได้ประโยชน์</li>
+  <li>เหตุผลเดียวที่คนอยากมีชั้นกลางคือ "ไม่ให้ tool output ท่วม context" ซึ่ง <b>worker แบบ background แก้ให้อยู่แล้ว</b> — ผลของ worker ไม่เข้า context ของ orchestrator</li>
+</ul>
+<p>orchestrator จึงเป็นแค่ <b>ผู้จ่ายงานกับผู้เก็บผล</b> และมีข้อห้ามสำคัญ: <b>มันห้ามลงมือแก้โค้ดเอง</b>เด็ดขาด แม้ใบเดียว. ทันทีที่มันลงมือ context มันจะบวมด้วยรายละเอียดของงานใบนั้น แล้วการตัดสินใจจ่ายงานใบอื่นจะแย่ลงทั้งกระดาน</p>
+
+<h2 id="c">2 · Concurrency model</h2>
+<p>โจทย์: dev loop กับ qa loop อยู่คนละเซสชัน มองไม่เห็นกัน แต่ต้องส่งงานหากันโดยไม่มีอะไรหายหรือถูกทำซ้ำ</p>
+
+<h3>2.1 หลักการเดียวที่ทั้งระบบตั้งอยู่บนมัน</h3>
+<div class="cards">
+<div class="card yes">
+  <span class="tag">หลัก 1</span>
+  <h4>Ownership by location</h4>
+  <p>แต่ละโฟลเดอร์สถานะมี <b>เจ้าของคนเดียว</b> ที่มีสิทธิ์หยิบการ์ดออกและแก้เนื้อใน</p>
+  <p><code>todo/ rework/</code> → dev เท่านั้น<br><code>in_review/</code> → qa เท่านั้น</p>
+  <p>ไม่มีจุดไหนที่สอง loop แย่งการ์ดใบเดียวกัน — กันด้วย<b>โครงสร้าง</b> ไม่ใช่ด้วยการล็อก</p>
+</div>
+<div class="card yes">
+  <span class="tag">หลัก 2</span>
+  <h4>Atomic rename = claim</h4>
+  <p>จะทำงานใบไหนต้อง <code>mv</code> มันเข้าโฟลเดอร์ claim ของตัวเองก่อน</p>
+  <p>rename บน filesystem เดียวกันแบ่งไม่ได้ — แย่งกันสองตัว มีตัวเดียวสำเร็จ อีกตัวได้ error แล้วไปหยิบใบอื่น</p>
+  <p>ไม่มี stale lock ให้ต้องเก็บกวาด มีแต่ไฟล์ค้างที่ reconcile ได้</p>
+</div>
+</div>
+
+<pre><code># claim ที่ปลอดภัย — ใช้ noclobber แล้วยืนยันว่าต้นทางหายจริง
+mv -n queue/todo/q7.json queue/claimed-dev/q7.json
+test ! -e queue/todo/q7.json || { echo "แพ้การแย่ง ไปใบอื่น"; }</code></pre>
+
+<div class="note warn">
+<strong>เงื่อนไขที่ทำให้ atomic จริง:</strong> ทุกโฟลเดอร์ต้องอยู่ <b>ใน filesystem เดียวกัน</b> (volume เดียว). ถ้าข้าม volume, <code>mv</code> จะกลายเป็น copy+delete ซึ่งไม่ atomic และจะมีช่วงที่การ์ดอยู่ทั้งสองที่. อย่าวาง state ไว้บน iCloud Drive / network drive เด็ดขาด — <code>~/.claude/loops/</code> บนดิสก์เครื่องเท่านั้น
+</div>
+
+<h3>2.2 ตารางสิทธิ์ — ใครเขียนอะไรได้</h3>
+<div class="tw">
+<table>
+<tr><th>ไฟล์ / โฟลเดอร์</th><th>dev loop</th><th>qa loop</th><th>/groom</th><th>คน</th></tr>
+<tr><td class="mono">queue/todo/</td><td>อ่าน + หยิบออก</td><td>—</td><td><b>สร้างไฟล์ใหม่</b></td><td>อ่าน</td></tr>
+<tr><td class="mono">queue/rework/</td><td>อ่าน + หยิบออก</td><td><b>ใส่เข้า</b></td><td>—</td><td>อ่าน</td></tr>
+<tr><td class="mono">queue/claimed-dev/</td><td><b>เจ้าของเต็ม</b></td><td>—</td><td>—</td><td>อ่าน</td></tr>
+<tr><td class="mono">queue/in_review/</td><td><b>ใส่เข้า</b></td><td>อ่าน + หยิบออก</td><td>—</td><td>อ่าน</td></tr>
+<tr><td class="mono">queue/claimed-qa/</td><td>—</td><td><b>เจ้าของเต็ม</b></td><td>—</td><td>อ่าน</td></tr>
+<tr><td class="mono">queue/ready_for_human/</td><td>—</td><td><b>ใส่เข้า</b></td><td>—</td><td>หยิบออก (merge)</td></tr>
+<tr><td class="mono">queue/needs_attention/</td><td>ใส่เข้า</td><td>ใส่เข้า</td><td>—</td><td>หยิบออก</td></tr>
+<tr><td class="mono">journal/dev.md</td><td><b>append เท่านั้น</b></td><td>—</td><td>—</td><td>อ่าน</td></tr>
+<tr><td class="mono">journal/qa.md</td><td>—</td><td><b>append เท่านั้น</b></td><td>—</td><td>อ่าน</td></tr>
+<tr><td class="mono">runtime/dev.json</td><td><b>เจ้าของเต็ม</b></td><td>—</td><td>—</td><td>อ่าน</td></tr>
+<tr><td class="mono">runtime/qa.json</td><td>—</td><td><b>เจ้าของเต็ม</b></td><td>—</td><td>อ่าน</td></tr>
+</table>
+</div>
+<p><b>อ่านตารางนี้ยังไง:</b> ทุกช่องที่เขียนว่า "ใส่เข้า" คือ <code>mv</code> เข้ามาเฉย ๆ ไม่แตะของที่มีอยู่. ไม่มีแถวไหนที่มีคำว่า "เจ้าของเต็ม" หรือ "append" ซ้ำสองคอลัมน์ — <b>นั่นคือหลักฐานว่าไม่มี write conflict ที่เป็นไปได้เลยในระบบ</b></p>
+
+<h3>2.3 ทำไม <code>/groom</code> เขียน <code>todo/</code> ได้ทั้งที่ dev เป็นเจ้าของ</h3>
+<p>เพราะมันสร้าง<b>ไฟล์ใหม่ชื่อใหม่</b> ไม่เคยแก้ไฟล์ที่มีอยู่. การสร้างไฟล์ที่ยังไม่มีกับการหยิบไฟล์ที่มีอยู่ ไม่ชนกันแม้จะทำพร้อมกัน. ข้อบังคับเดียวคือ <b>เขียนแบบ tmp แล้ว rename</b> — ไม่งั้น dev อาจหยิบไฟล์ที่เขียนค้างครึ่งใบไปทำ:</p>
+<pre><code>echo "$card" &gt; queue/.tmp/q9.json && mv queue/.tmp/q9.json queue/todo/q9.json</code></pre>
+<p>กฎเดียวกันนี้ใช้กับทุกครั้งที่มีการเขียนเนื้อการ์ด (QA เขียน findings ก็ต้อง tmp+rename เหมือนกัน)</p>
+
+<h2 id="l">3 · Layout</h2>
+<pre><code>~/.claude/loops/&lt;project&gt;/
+├── queue/
+│   ├── .tmp/                 เขียนที่นี่ก่อน rename เสมอ
+│   ├── todo/                 ← /groom ใส่ · dev หยิบ
+│   ├── rework/               ← qa ใส่ · dev หยิบ (มาก่อน todo)
+│   ├── claimed-dev/          dev เป็นเจ้าของเต็ม
+│   ├── in_review/            ← dev ใส่ · qa หยิบ
+│   ├── claimed-qa/           qa เป็นเจ้าของเต็ม
+│   ├── ready_for_human/      ← qa ใส่ · คนมา merge
+│   ├── needs_attention/      ← ทั้งคู่ใส่ได้ · คนมาดู
+│   ├── blocked/              L3 / รอ dep
+│   └── done/                 merged แล้ว (reconciler ย้ายจากการอ่าน git)
+├── journal/{dev,qa}.md       append-only แยกไฟล์
+├── runtime/{dev,qa}.json     worker pool, tick, budget ของแต่ละ loop
+└── STOP                      มีไฟล์นี้ = ทั้งสอง loop จบใน tick ถัดไป</code></pre>
+
+<div class="fsm">
+<pre>            /groom
+               │
+               ▼
+   ┌────────► todo ◄──────────────────┐
+   │           │  claim (mv)          │
+   │           ▼                      │
+   │      claimed-dev ──► worker×N (worktree แยกกัน)
+   │           │              │
+   │           │      ผ่าน acceptance+autoreview → push + draft PR
+   │           ▼              │
+   │       in_review ◄────────┘
+   │           │  claim (mv)
+   │           ▼
+   │       claimed-qa ──► qa worker×M (read-only, fresh context)
+   │           │              │
+   │    ┌──────┴──────────────┤
+   │    │ ผ่าน                │ ไม่ผ่าน + findings
+   │    ▼                     ▼
+   │  ready_for_human      rework ──┐
+   │    │  (คนกด merge)             │ count &lt; 2
+   │    ▼                           │
+   │   done                         └──► dev หยิบก่อน todo เสมอ
+   │                                     count = 2 → needs_attention
+   └─────────────────────────────────────────────────────────────</pre>
+</div>
+
+<h2 id="o">4 · Orchestrator tick</h2>
+<p>ทั้งสอง loop ใช้โครงเดียวกัน ต่างกันแค่โฟลเดอร์ที่เป็นเจ้าของกับชนิดของ worker:</p>
+
+<ol class="steps">
+  <li><b>STOP + budget guard</b><span class="d">มี <code>STOP</code> → หยุด (สั่ง worker ที่วิ่งอยู่ให้จบ แล้วคืนการ์ด). เลย deadline หรือหมด token budget → เหมือนกัน</span></li>
+  <li><b>Reconcile ของค้าง</b><span class="d">การ์ดใน <code>claimed-*</code> ที่ <code>claimed_at</code> เก่ากว่า 30 นาที และไม่มี worker ไหนถืออยู่ → ไปดูความจริงที่ git (branch/diff มีไหม) แล้วคืน <code>todo/</code> หรือส่ง <code>needs_attention/</code></span></li>
+  <li><b>Harvest ผลของ worker ที่จบ</b><span class="d">อ่าน verdict ที่ worker เขียนไว้ในการ์ด → <code>mv</code> ไปโฟลเดอร์ถัดไป. <b>อ่านผลสรุปเท่านั้น ไม่ดึง transcript ของ worker เข้ามา</b></span></li>
+  <li><b>เช็ค backpressure</b><span class="d">ถ้าของกองตรงกลางเกินเพดาน (ส่วนที่ 6) → ข้ามขั้น dispatch ไปเลย ไม่ spawn เพิ่ม</span></li>
+  <li><b>Dispatch เติมช่องว่าง</b><span class="d"><code>slots = max_workers − running</code> · เลือกการ์ดจาก <code>rework/</code> ก่อน <code>todo/</code> ที่ <b>conflict-free</b> กับที่กำลังรัน · claim ด้วย mv · spawn worker แบบ background พร้อม worktree แยก</span></li>
+  <li><b>Persist แล้วค่อยตั้งเวลาตื่น</b><span class="d">เขียน <code>runtime/*.json</code> + append journal <b>ก่อน</b> ScheduleWakeup เสมอ</span></li>
+</ol>
+
+<h4>เลือกเวลาตื่นยังไง</h4>
+<div class="tw">
+<table>
+<tr><th>สภาพ</th><th>delay</th><th>noop</th><th>เหตุผล</th></tr>
+<tr><td>มี worker วิ่งอยู่</td><td class="mono">1200–1800</td><td>true</td><td>worker จบเมื่อไรระบบปลุกให้เอง — นี่เป็นแค่ตาข่ายกันแฮงก์</td></tr>
+<tr><td>มี slot ว่าง + มีการ์ดรอ</td><td class="mono">60</td><td>false</td><td>ไม่ได้รออะไร รีบจ่ายงานต่อ</td></tr>
+<tr><td>คิวว่าง (idle)</td><td class="mono">300 → ×2 → 3600</td><td>true</td><td>รอ <code>/groom</code> ใส่การ์ดใหม่ ยิ่งเงียบนานยิ่งเช็คห่าง</td></tr>
+<tr><td>backpressure เต็ม</td><td class="mono">900</td><td>true</td><td>รอคนเคลียร์ PR — เร่งไปก็ไม่มีประโยชน์</td></tr>
+</table>
+</div>
+
+<h2 id="s">5 · Conflict-set scheduling</h2>
+<p>worktree แยกกันแก้ปัญหาไฟล์ชนกันตอน<b>เขียน</b>ได้ แต่ไม่ได้แก้ปัญหาตอน<b>merge</b>: การ์ดสองใบที่แก้ไฟล์เดียวกันคนละ worktree จะได้ PR สองอันที่ conflict กันแน่นอน แล้วใครก็ตามที่ merge ทีหลังต้องมานั่ง rebase — ซึ่งเป็นงานที่ loop ทำไม่ได้</p>
+
+<div class="note ok">
+<strong>ทางแก้:</strong> ใช้ฟิลด์ <code>touches</code> ในการ์ด (ที่ <code>/groom</code> บังคับให้ระบุอยู่แล้ว) เป็น <b>ชุดกุญแจล็อก</b>. การ์ดจะถูก dispatch ได้ก็ต่อเมื่อ <code>touches</code> ของมัน<b>ไม่ตัดกับ</code>touches<code>ของทุกใบที่กำลังรันอยู่</b>. นี่ทำให้ฟิลด์ที่ดูเป็นเอกสารเฉย ๆ กลายเป็นกลไกจริงของ scheduler
+</div>
+
+<pre><code>running: q1{package.json, pnpm-lock.yaml}  q2{src/utils/date.ts, …test.ts}
+
+พิจารณา q5{src/utils/date.ts}      → ตัดกับ q2 → ข้าม รอรอบหน้า
+พิจารณา q6{src/api/user.ts}        → ไม่ตัดกับใคร → dispatch ได้
+พิจารณา q7{package.json}           → ตัดกับ q1 → ข้าม</code></pre>
+
+<ul>
+  <li><b>Glob ให้หยาบไว้ก่อน</b> — <code>touches: ["src/api/**"]</code> ปลอดภัยกว่าไล่ระบุทีละไฟล์แล้วพลาด. เสียความขนานนิดหน่อย แลกกับไม่ต้อง rebase มือ = คุ้ม</li>
+  <li><b>ไฟล์ร้อนต้อง serialize เสมอ</b> — <code>package.json</code>, lockfile, migration, schema, config กลาง. ประกาศเป็น <code>hot_paths</code> ในคอนฟิก: การ์ดที่แตะไฟล์เหล่านี้บังคับรันเดี่ยว ห้ามมีอะไรขนานด้วยเลย</li>
+  <li><b>Starvation guard</b> — การ์ดที่ถูกข้ามเกิน 5 รอบเพราะ conflict ให้เลื่อนเป็นคิวหน้าสุดครั้งถัดไป ไม่งั้นใบที่แตะไฟล์ยอดนิยมจะไม่ได้ทำสักที</li>
+</ul>
+
+<h2 id="a">6 · Dynamic scaling + backpressure</h2>
+<p>โจทย์ของต่อง — "การ์ดเพิ่มก็สร้าง agent เพิ่มได้เลย" — ทำได้ตรง ๆ ด้วย worker pool ที่เติมช่องว่างทุก tick โดยไม่ต้องรีสตาร์ทอะไร:</p>
+
+<ol class="steps">
+  <li><b>/groom หย่อนการ์ดใหม่ลง <code>todo/</code> ตอนไหนก็ได้</b><span class="d">แม้ตอน loop กำลังวิ่ง — เพราะเป็นการสร้างไฟล์ใหม่ ไม่ชนกับใคร</span></li>
+  <li><b>tick ถัดไปเห็นเอง</b><span class="d">orchestrator นับ slot ว่าง แล้วหยิบเท่าที่ conflict-free — ไม่ต้องบอก ไม่ต้องรีสตาร์ท</span></li>
+  <li><b>worker จบ = ระบบปลุก orchestrator ทันที</b><span class="d">เติม slot ต่อได้เลยโดยไม่ต้องรอครบรอบ — สำคัญ เพราะแบบ batch จะเสียเวลาไปกับการรอ worker ที่ช้าที่สุดของรอบเสมอ</span></li>
+</ol>
+
+<h4>เพดานที่ต้องตั้ง — ทุกตัวมีเหตุผลของมัน</h4>
+<div class="tw">
+<table>
+<tr><th>เพดาน</th><th>ค่าเริ่ม</th><th>ถ้าไม่มีจะเกิดอะไร</th></tr>
+<tr><td class="mono">dev.max_workers</td><td>3</td><td>token burn ขนานไม่มีเพดาน + CI คิวยาว</td></tr>
+<tr><td class="mono">qa.max_workers</td><td>2</td><td>QA เบากว่า (read-only) แต่ก็กิน token</td></tr>
+<tr><td class="mono">max_in_flight</td><td>5</td><td><b>สำคัญสุด</b> — dev ผลิตเร็วกว่า QA ตรวจ ของกองที่ <code>in_review/</code> ไม่มีที่สิ้นสุด</td></tr>
+<tr><td class="mono">max_open_prs</td><td>3</td><td>PR ท่วมจนคนรีวิวไม่ทัน = คอขวดย้ายไปอยู่ที่คน</td></tr>
+<tr><td class="mono">token_budget</td><td>ต่อ loop ต่อวัน</td><td>ขนาน N ตัว = เผาเร็วขึ้น N เท่า รู้ตัวอีกทีตอนเช้า</td></tr>
+<tr><td class="mono">deadline_at</td><td>ต่อ loop</td><td>idle mode ไม่มีวันจบเองเพราะออกแบบให้รอการ์ดใหม่</td></tr>
+</table>
+</div>
+
+<div class="note warn">
+<strong>Backpressure คือสิ่งที่คนมักลืม:</strong> พอ dev ขนาน 3 ตัวแต่ QA ขนาน 2 ตัว ระบบจะผลิตเร็วกว่าตรวจโดยธรรมชาติ. ถ้าไม่มี <code>max_in_flight</code> ของจะกองที่ <code>in_review/</code> เรื่อย ๆ — worker ยังทำงานหนัก ตัวเลขดูสวย แต่<b>ไม่มีอะไรถึงมือต่องเร็วขึ้นเลย</b> เพราะคอขวดอยู่ปลายทาง. เมื่อชนเพดาน dev ต้อง<b>หยุดรับงานใหม่</b> ไม่ใช่ทำต่อ
+</div>
+
+<h2 id="w">7 · Worker contract</h2>
+<div class="cards">
+<div class="card">
+  <span class="tag">dev worker</span>
+  <h4>เขียนโค้ดได้ · worktree แยก</h4>
+  <p><b>ได้รับ:</b> การ์ด 1 ใบ + path ของ worktree</p>
+  <p><b>ทำ:</b> แก้ → acceptance ทุกข้อ → autoreview → push + draft PR</p>
+  <p><b>คืน:</b> verdict + branch + PR + ผลเทสตามจริง (แดงต้องบอกว่าแดง)</p>
+  <p><b>ห้าม:</b> merge · แตะไฟล์นอก <code>touches</code> · เพิ่มการ์ดใหม่ · แตะ L3</p>
+</div>
+<div class="card">
+  <span class="tag">qa worker</span>
+  <h4>read-only · fresh context</h4>
+  <p><b>ได้รับ:</b> การ์ด + diff ของ PR + คำสั่ง acceptance — <b>ไม่มี transcript ของ dev</b></p>
+  <p><b>ทำ:</b> build/integration เต็ม + regression + ไล่ acceptance ทีละข้อ + จับ scope drift</p>
+  <p><b>คืน:</b> pass หรือ findings ที่มี file:line + <code>violates</code> + severity</p>
+  <p><b>ห้าม:</b> แก้โค้ด · merge · ตีกลับด้วยเหตุผลที่อ้าง acceptance ไม่ได้</p>
+</div>
+</div>
+
+<div class="note">
+<strong>ทำไม worker ต้องเป็น background:</strong> ผลลัพธ์ระหว่างทางของมันจะไม่เข้า context ของ orchestrator — orchestrator เห็นแค่สรุปตอนจบ. ถ้าไม่ทำแบบนี้ ขนาน 3 ตัวเท่ากับ transcript 3 ชุดไหลเข้า context เดียว แล้ว orchestrator จะโดน compaction ภายในไม่กี่ tick และเริ่มจ่ายงานมั่ว
+</div>
+
+<h2 id="n">8 · ปัญหาใหม่ที่การขนานสร้างขึ้น</h2>
+
+<div class="issue">
+  <div class="hd"><span class="b b-hi">สูง</span><h4>8.1 &nbsp;Semantic conflict — CI เขียวตอนเปิด แต่พังหลัง merge</h4></div>
+  <p>3 PR แตกจาก base เดียวกัน ทุกอันเขียว. merge อันแรกเข้า <code>dev</code> → อีก 2 อันกลายเป็น stale ทันที. ไม่ conflict ที่ระดับ text (คนละไฟล์) แต่พังที่ระดับความหมาย — เช่นใบหนึ่งเปลี่ยน signature ของฟังก์ชัน อีกใบเพิ่ม caller ใหม่ที่เรียกแบบเก่า</p>
+  <div class="fix"><b>แก้:</b> QA ต้องรัน <b>บน merge preview</b> (base ล่าสุด + PR นั้น) ไม่ใช่บน branch เปล่า ๆ · และเมื่อ base ขยับ (มี PR ถูก merge) ให้ <b>mark การ์ดที่ยังไม่ merge ว่า stale</b> แล้วส่งกลับ <code>in_review/</code> เพื่อ verify ซ้ำ — verify ซ้ำถูกกว่าการ revert เยอะ</div>
+</div>
+
+<div class="issue">
+  <div class="hd"><span class="b b-hi">สูง</span><h4>8.2 &nbsp;Worktree รั่ว</h4></div>
+  <p>worker ตายกลางทาง → worktree ค้าง + branch ค้าง. สะสมข้ามคืนจนดิสก์เต็มและ <code>git worktree list</code> อ่านไม่รู้เรื่อง</p>
+  <div class="fix"><b>แก้:</b> ตั้งชื่อ worktree/branch ด้วย card id เสมอ (<code>loop/q7-…</code>) → reconcile รู้ทันทีว่าอันไหนของใบไหน · ทุก tick เก็บกวาด worktree ที่การ์ดไม่ได้อยู่ใน <code>claimed-*</code> แล้ว · ตอน loop จบให้ <code>git worktree prune</code></div>
+</div>
+
+<div class="issue">
+  <div class="hd"><span class="b b-mid">กลาง</span><h4>8.3 &nbsp;Split-brain ระหว่างสอง loop</h4></div>
+  <p>ทั้งสอง loop มีมุมมองของตัวเองว่าระบบมีอะไรอยู่บ้าง และมันไม่ตรงกัน — dev คิดว่าส่ง q3 ไป review แล้ว แต่ qa ยังไม่เคยเห็น (เพราะยังไม่ tick)</p>
+  <div class="fix"><b>แก้:</b> ยอมรับว่ามันไม่ตรงกันเป็นเรื่องปกติ — <b>ห้าม loop ไหนตัดสินใจจากสมมติฐานว่าอีกฝั่งทำอะไรไปแล้ว</b>. ตัดสินจากสิ่งที่เห็นในโฟลเดอร์ตัวเองเท่านั้น. ความจริงเดียวของระบบคือ filesystem ไม่ใช่ runtime ของ loop ไหน</div>
+</div>
+
+<div class="issue">
+  <div class="hd"><span class="b b-mid">กลาง</span><h4>8.4 &nbsp;การ์ดหายระหว่าง mv (ช่วงเสี้ยววินาที)</h4></div>
+  <p>ระหว่าง <code>mv</code> การ์ดจะไม่อยู่ในโฟลเดอร์เดิมแล้วแต่ยังไม่ถึงปลายทางในสายตาของ process ที่กำลังลิสต์อยู่ — loop อีกตัวอาจนับยอดผิดชั่วขณะ</p>
+  <div class="fix"><b>แก้:</b> อย่าใช้ยอดนับเป็นเงื่อนไข <b>หยุด</b> ทันที. "คิวว่าง" ต้องเห็นว่าง <b>2 tick ติด</b> ถึงจะถือว่าว่างจริง — และเรามี idle mode อยู่แล้วเลยไม่มีอะไรเสียหาย</div>
+</div>
+
+<div class="issue">
+  <div class="hd"><span class="b b-mid">กลาง</span><h4>8.5 &nbsp;เซสชันเดียวตายเงียบ ระบบครึ่งใบยังเดินอยู่</h4></div>
+  <p>qa loop ตาย (เครื่อง sleep, หน้าต่างปิด) แต่ dev loop ยังผลิตต่อ → ของกองที่ <code>in_review/</code> โดยไม่มีใครมาเก็บ กว่าจะรู้ก็เช้า</p>
+  <div class="fix"><b>แก้:</b> แต่ละ loop เขียน <code>last_tick_at</code> ลง <code>runtime/*.json</code> ทุก tick · อีกฝั่งอ่านของเพื่อน (อ่านอย่างเดียว ไม่เขียน) ถ้าเก่าเกิน 2× ช่วงพักสูงสุด → <b>ประกาศว่าอีกฝั่งตาย แล้วหยุดรับงานใหม่</b> พร้อมรายงาน. ไม่มีข่าว ≠ ข่าวดี</div>
+</div>
+
+<div class="issue">
+  <div class="hd"><span class="b b-lo">ต่ำ</span><h4>8.6 &nbsp;ไล่ปัญหายากขึ้นมาก</h4></div>
+  <p>ขนาน 3 ตัว journal จะสลับกันจนอ่านไม่ออกว่าอะไรเกิดก่อนหลัง</p>
+  <div class="fix"><b>แก้:</b> ทุกบรรทัด journal ขึ้นต้นด้วย <code>[tick][card-id][worker-id]</code> เสมอ · worker เขียน log ของตัวเองแยกไฟล์ <code>journal/workers/q7.md</code> · journal หลักเก็บแค่ transition ของการ์ด ไม่เก็บรายละเอียดงาน</div>
+</div>
+
+<h2 id="t">9 · เดินจริง</h2>
+<pre><code>09:00  dev.tick 1   todo=6  slots=3
+                    dispatch q1{package.json} q2{utils/date} q4{api/user}
+                    q3 ถูกข้าม (touches ตัดกับ q1)
+                    wakeup 1200s (fallback)
+
+09:06  ← worker q2 จบ → ระบบปลุก dev
+       dev.tick 2   harvest q2 → in_review/  (draft PR #202)
+                    slot ว่าง 1 → q3 ยังตัดกับ q1 → หยิบ q5 แทน
+                    wakeup 1200s
+
+09:07  qa.tick 4    เห็น q2 ใน in_review → claim → spawn qa worker
+                    (fresh context: การ์ด + diff + acceptance เท่านั้น)
+
+09:11  ← qa worker จบ: ไม่ผ่าน 2 findings (blocking)
+       qa.tick 5    เขียน findings ลงการ์ด (tmp+rename)
+                    rework_count 0→1 → mv ไป rework/
+                    wakeup 60s (ยังมีของใน in_review)
+
+09:12  dev.tick 3   หยิบ rework/ ก่อน todo/ → q2 กลับเข้า claimed-dev
+                    worker แก้ต่อบน branch เดิม ไม่แตกใหม่
+
+09:40  /groom เพิ่ม q9, q10 ลง todo/  ← ระหว่าง loop กำลังวิ่ง
+09:41  dev.tick 6   เห็นเอง เติม slot ทันที ไม่ต้องรีสตาร์ทอะไร
+
+10:20  max_in_flight ชน 5  → dev หยุด dispatch ใหม่
+                             wakeup 900s noop:true  รอต่องเคลียร์ PR
+
+10:55  ต่อง merge #202 → base ขยับ
+       qa.tick 12   mark q4, q5 stale → ส่งกลับ verify ซ้ำบน base ใหม่</code></pre>
+
+<h2 id="r">10 · ลำดับที่ควรทำ</h2>
+<ol class="steps">
+  <li><b>วาง layout + /groom</b> <span class="b b-lo">เริ่มที่นี่</span>
+    <span class="d">สร้างโครงโฟลเดอร์ + skill groom ที่เขียนการ์ดแบบ tmp+rename พร้อมฟิลด์ <code>touches</code> ครบ. ยังไม่มี loop อะไรเลยก็ใช้ประโยชน์ได้แล้ว และ <code>touches</code> คือสิ่งที่ scheduler ทั้งระบบพึ่งพา</span></li>
+  <li><b>dev loop · max_workers = 1</b>
+    <span class="d">พิสูจน์ claim/reconcile/worktree/harvest ให้ทำงานถูกก่อน โดยยังไม่มีความซับซ้อนของการขนาน. ผิดตรงไหนจะเห็นชัดเพราะมีตัวเดียว</span></li>
+  <li><b>ดัน max_workers เป็น 3 + conflict-set</b>
+    <span class="d">ตรงนี้แหละที่ scheduling เริ่มมีผลจริง — ดูว่ามี PR ที่ต้อง rebase มือไหม ถ้ามีแปลว่า <code>touches</code> หยาบไม่พอ</span></li>
+  <li><b>qa loop เซสชันที่สอง</b>
+    <span class="d">เปิดหน้าต่างที่สอง ชี้ที่ state เดียวกัน. เพิ่ม heartbeat check ระหว่างกันตั้งแต่วันแรก (8.5)</span></li>
+  <li><b>จูนเพดาน</b>
+    <span class="d">ปรับ max_in_flight / max_open_prs จากของจริง — ตัวเลขที่ถูกคือตัวเลขที่ทำให้ <b>ไม่มีอะไรกองรอเกินสองสามชั่วโมง</b> ไม่ใช่ตัวเลขที่ทำให้ worker ยุ่งที่สุด</span></li>
+</ol>
+
+<div class="note">
+<strong>สิ่งที่จะรู้ได้จากขั้นที่ 3 เท่านั้น:</strong> ความขนานที่ใช้ได้จริงถูกกำหนดโดย <b>โครงสร้างโค้ดของโปรเจกต์</b> ไม่ใช่โดยค่าคอนฟิก. repo ที่ทุกงานวิ่งผ่าน <code>package.json</code> หรือไฟล์ config กลางจะขนานได้แค่ 1–2 ตัวจริง ๆ ไม่ว่าจะตั้ง <code>max_workers</code> เท่าไร. ตั้ง 3 ไว้ก่อนแล้ววัดว่า dispatch จริงได้กี่ตัวต่อ tick — ถ้าค่าเฉลี่ยต่ำกว่า 2 ตลอด แปลว่าคอขวดอยู่ที่ <code>touches</code> ที่ซ้อนกัน ไม่ใช่ที่จำนวน worker
+</div>
+
+<hr>
+<p class="sub"><a href="plan.html">แผนหลัก</a> · <a href="dev-queue-loop.html">Dev Queue Loop</a> · <a href="qa-loop-and-grooming.html">QA Loop + Grooming</a></p>
+
+</div>
+</body>
+</html>

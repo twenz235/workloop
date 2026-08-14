@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QA Loop + Grooming Skill — ประเมินไอเดีย</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#faf9f6; --ink:#1c1b19; --ink-soft:#54514b; --ink-faint:#8b8781;
+    --line:#dedad2; --line-strong:#c4bfb5; --tint:#f2efe9;
+    --rose:#b0757a; --rose-bg:#f7edee;
+    --sage:#6c7f6b; --sage-bg:#eef2ed;
+    --amber:#9a7d45; --amber-bg:#f6f0e4;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:'Sarabun',-apple-system,sans-serif;font-weight:300;font-size:16px;line-height:1.75}
+  .wrap{max-width:920px;margin:0 auto;padding:64px 28px 120px}
+  code,pre,.mono{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:13.5px}
+  code{background:var(--tint);padding:1px 5px;border-radius:2px;font-weight:400}
+  pre{background:var(--tint);border:1px solid var(--line);border-radius:2px;
+    padding:16px 18px;overflow-x:auto;line-height:1.65;margin:16px 0}
+  pre code{background:none;padding:0}
+  h1{font-size:30px;font-weight:600;letter-spacing:-.01em;margin:0 0 8px}
+  h2{font-size:21px;font-weight:600;margin:64px 0 4px;padding-bottom:10px;border-bottom:1px solid var(--line-strong)}
+  h3{font-size:16.5px;font-weight:600;margin:34px 0 8px}
+  h4{font-size:15px;font-weight:600;margin:22px 0 6px;color:var(--ink-soft)}
+  p{margin:10px 0}
+  .sub{color:var(--ink-faint);font-size:14px;margin:0 0 4px}
+  .lead{color:var(--ink-soft);font-size:15.5px}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  hr{border:0;border-top:1px solid var(--line);margin:40px 0}
+  a{color:var(--ink);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
+  .toc{border:1px solid var(--line);border-radius:2px;padding:20px 24px;margin:36px 0 8px;background:#fff}
+  .toc h4{margin:0 0 10px;color:var(--ink-faint);font-size:12.5px;letter-spacing:.08em;text-transform:uppercase}
+  .toc ol{margin:0;padding-left:20px;font-size:14.5px}
+  .toc li{margin:3px 0}
+  .tw{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:2px;background:#fff}
+  table{border-collapse:collapse;width:100%;min-width:620px;font-size:14px}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-weight:600;background:var(--tint);white-space:nowrap;font-size:13px;letter-spacing:.02em}
+  tr:last-child td{border-bottom:0}
+  td.mono,th.mono{font-family:'JetBrains Mono',monospace;font-size:12.5px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:20px 0}
+  .card{border:1px solid var(--line);border-radius:2px;padding:18px 20px;background:#fff}
+  .card h4{margin:0 0 4px;font-size:15px;color:var(--ink)}
+  .card .tag{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);display:block;margin-bottom:8px}
+  .card p{font-size:14px;color:var(--ink-soft);margin:6px 0}
+  .card.yes{border-left:3px solid var(--sage)}
+  .card.no{border-left:3px solid var(--rose)}
+  .b{display:inline-block;font-size:11.5px;letter-spacing:.04em;padding:2px 8px;border-radius:2px;border:1px solid;white-space:nowrap;font-weight:400}
+  .b-hi{color:var(--rose);border-color:var(--rose);background:var(--rose-bg)}
+  .b-mid{color:var(--amber);border-color:var(--amber);background:var(--amber-bg)}
+  .b-lo{color:var(--sage);border-color:var(--sage);background:var(--sage-bg)}
+  .b-n{color:var(--ink-faint);border-color:var(--line-strong);background:var(--tint)}
+  .note{border:1px solid var(--line-strong);border-left:3px solid var(--ink-soft);border-radius:2px;padding:14px 18px;margin:20px 0;background:#fff;font-size:14.5px}
+  .note.warn{border-left-color:var(--rose)}
+  .note.ok{border-left-color:var(--sage)}
+  .note strong{font-weight:600}
+  .steps{list-style:none;padding:0;margin:20px 0;counter-reset:s}
+  .steps li{counter-increment:s;position:relative;padding:0 0 20px 42px;margin:0;border-left:1px solid var(--line)}
+  .steps li:last-child{border-left-color:transparent;padding-bottom:0}
+  .steps li::before{content:counter(s);position:absolute;left:-13px;top:0;width:25px;height:25px;border-radius:50%;
+    background:var(--paper);border:1px solid var(--line-strong);color:var(--ink-soft);
+    font-size:12px;display:flex;align-items:center;justify-content:center}
+  .steps b{font-weight:600}
+  .steps .d{color:var(--ink-soft);font-size:14px;display:block;margin-top:2px}
+  .k{color:var(--ink-faint);font-size:13px}
+  .fsm{background:#fff;border:1px solid var(--line);border-radius:2px;padding:20px 22px;margin:18px 0;overflow-x:auto}
+  .fsm pre{background:none;border:0;padding:0;margin:0;font-size:13px;line-height:1.9}
+  .issue{border:1px solid var(--line);border-radius:2px;background:#fff;margin:16px 0;padding:18px 20px}
+  .issue .hd{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px}
+  .issue .hd h4{margin:0;font-size:15.5px;color:var(--ink)}
+  .issue .fix{border-top:1px solid var(--line);margin-top:12px;padding-top:12px;font-size:14.5px}
+  .issue .fix b{font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="sub">2026-08-11 · sd · ต่อจาก <a href="dev-queue-loop.html">Dev Queue Loop</a> · <a href="plan.html">แผนหลัก</a></p>
+<h1>QA Loop + Grooming Skill</h1>
+<p class="lead">ประเมินไอเดียของต่อง 2 ข้อ: แยก QA loop ออกจาก dev loop, และทำ skill แปลง requirement เป็นการ์ด</p>
+
+<div class="note ok">
+<strong>สรุปคำตัดสิน:</strong> ทั้งสองไอเดียถูกทาง และ <b>skill grooming สำคัญกว่า QA loop</b> ควรทำก่อน. ส่วน QA loop มี <b>1 จุดที่พังแน่ ๆ</b> ถ้าทำตามที่ร่างมา — <code>ไม่ผ่าน → todo</code> ทำให้ dev กับ QA ตีกันไปมาไม่มีวันจบ. อีก 4 จุดเป็นเรื่องต้องนิยามให้ชัดก่อนเริ่ม
+</div>
+
+<div class="toc">
+<h4>สารบัญ</h4>
+<ol>
+  <li><a href="#w">QA loop มีค่าตรงไหนจริง ๆ</a></li>
+  <li><a href="#p">5 จุดที่ต้องแก้ก่อนใช้</a></li>
+  <li><a href="#s">State machine ฉบับแก้แล้ว</a></li>
+  <li><a href="#d">ใครตรวจอะไร — แบ่งงาน dev / QA</a></li>
+  <li><a href="#c">รันยังไง — 1 loop 2 บทบาท ไม่ใช่ 2 loop</a></li>
+  <li><a href="#g">Skill grooming — <code>/groom</code></a></li>
+  <li><a href="#r">ลำดับที่ควรทำ</a></li>
+</ol>
+</div>
+
+<h2 id="w">1 · QA loop มีค่าตรงไหน</h2>
+<p>เหตุผลที่ควรมี ไม่ใช่ "เพราะของจริงเขามี QA" แต่เพราะ <b>autoreview ที่รันในบริบทเดียวกับตอนเขียน มันตรวจตัวเองไม่ออก</b> — มันเห็นเหตุผลของตัวเองว่าทำไมถึงเขียนแบบนั้น เลยมีแนวโน้มเห็นด้วยกับตัวเอง. anchoring bias นี้แก้ด้วย prompt ไม่ได้ ต้องแก้ด้วยการเปลี่ยนบริบท</p>
+
+<p>QA ที่ทำงานจาก <b>context สะอาด เห็นแค่ใบงาน + diff</b> โดยไม่รู้ว่า dev คิดอะไรอยู่ตอนเขียน จะถามคำถามที่ dev ไม่ถามตัวเอง: "diff นี้ทำสิ่งที่ใบงานขอจริงไหม" ไม่ใช่ "โค้ดนี้ทำงานตามที่ฉันตั้งใจไหม"</p>
+
+<div class="note">
+<strong>เงื่อนไขที่ทำให้คุ้ม:</strong> QA ต้องเป็น <b>fresh context จริง ๆ</b> (subagent แยก หรือ tick ที่อ่านจากไฟล์ล้วน) และตรวจ<b>คนละชุด</b>กับที่ dev ตรวจไปแล้ว. ถ้า QA = รัน autoreview ซ้ำอีกรอบในบริบทเดิม = จ่ายสองเท่าเพื่อคำตอบเดิม ไม่ต้องทำก็ได้
+</div>
+
+<h2 id="p">2 · 5 จุดที่ต้องแก้</h2>
+
+<div class="issue">
+  <div class="hd"><span class="b b-hi">พังแน่ถ้าไม่ครบ 3 ชั้น</span><h4>2.1 &nbsp;ทางกลับของ QA</h4></div>
+  <p class="k">ร่างแรกของต่อง: <code>ไม่ผ่าน → todo</code> · ร่างที่แก้แล้ว: <code>ไม่ผ่าน → เขียนคอมเมนต์รายละเอียด → todo</code></p>
+  <p>การเติม "เขียนคอมเมนต์รายละเอียด" <b>แก้ถูกจุดที่สำคัญที่สุด</b> — ปัญหาเดิมคือ dev tick หน้าหยิบใบขึ้นมาโดยไม่รู้ว่า QA ติดอะไร เลยทำแบบเดิมอีกแล้วโดนตีอีก. มี finding แล้วรอบถัดไปจะไม่ใช่การทำซ้ำอีกต่อไป</p>
+  <p>แต่ยังขาดอีก 2 ชั้น ที่จำเป็นเพราะ <b>คอมเมนต์ดีแค่ไหนก็ไม่การันตีว่าจะจบ</b>: ถ้า QA คาดหวังบางอย่างที่ใบงานไม่เคยระบุ มันจะตีกลับด้วย finding <b>ใหม่</b>ได้ทุกรอบ ไม่ซ้ำของเดิมเลยแต่ก็ไม่มีวันจบ</p>
+  <div class="fix">
+    <b>ต้องมีครบ 3 ชั้น:</b>
+    <ul>
+      <li><b>① finding ที่ actionable</b> <span class="b b-lo">ต่องเติมแล้ว</span> — <code>qa_findings[]</code> มี file:line + อ้างข้อของ acceptance + severity (รายละเอียดส่วนที่ 4.1)</li>
+      <li><b>② แยกให้ออกว่าใบนี้ "เคยโดนตี"</b> — ปลายทางจะชื่อ <code>todo</code> ก็ได้ ชื่อไม่ใช่ประเด็น แต่ dev ต้องอ่านออกจากการ์ดว่า <b>ต้องแก้ต่อบน branch/PR เดิม ไม่ใช่แตกใหม่</b> และใบพวกนี้ต้องถูกหยิบ<b>ก่อน</b>ใบใหม่เสมอ. ถ้าใช้ <code>status:"todo"</code> ล้วนแล้วเรียงตามลำดับปกติ ใบที่แก้ค้างจะถูกดองท้ายแถวขณะที่ loop ไปเปิดงานใหม่เรื่อย ๆ</li>
+      <li><b>③ เพดานจำนวนรอบ</b> — <code>rework_count</code> สูงสุด <b>2</b> ครบแล้วเด้ง <code>needs_attention</code> ให้คน. นี่คือชั้นเดียวที่<b>รับประกันว่าจบ</b> ไม่ว่า finding จะดีแค่ไหน. QA ไม่พอใจหลังแก้ 2 รอบ = ใบงานเขียนไม่ชัดตั้งแต่ต้น ไม่ใช่ dev ทำไม่ได้ — ต้องให้คนมาตัดสิน ไม่ใช่ให้ bot เถียงกันต่อ</li>
+    </ul>
+  </div>
+</div>
+
+<div class="issue">
+  <div class="hd"><span class="b b-hi">ต้องนิยาม</span><h4>2.2 &nbsp;QA ผ่าน → <code>done</code> เท่ากับให้ bot อนุมัติ merge</h4></div>
+  <p>ในดีไซน์เดิม <code>done</code> = merge แล้ว ซึ่งคนเป็นคนกด. ถ้า QA ผ่านแล้วเลื่อนเป็น <code>done</code> เลย เท่ากับ QA loop กลายเป็นผู้อนุมัติ — <b>เพดานสิทธิ์ถูกยกขึ้นโดยไม่ได้ตั้งใจ</b> ขัดกฎ "loop ไปได้สูงสุดแค่ PR"</p>
+  <div class="fix">
+    <b>แก้:</b> QA ผ่าน → <code>ready_for_human</code> (พร้อมให้กด). <code>done</code> สงวนไว้สำหรับ merged เท่านั้น และเป็นสถานะเดียวที่ loop <b>เขียนเองไม่ได้</b> — มันเปลี่ยนได้จากการอ่าน git ว่า PR ถูก merge แล้วเท่านั้น
+  </div>
+</div>
+
+<div class="issue">
+  <div class="hd"><span class="b b-mid">ต้องนิยาม</span><h4>2.3 &nbsp;PR เปิดตอนไหน</h4></div>
+  <p>ถ้า dev เปิด PR ปกติแล้ว QA ตีกลับ → PR ค้างเป็นขยะรอ force-push. ถ้าไม่เปิด PR เลย → QA ต้องอ่าน diff จาก local ซึ่งเสียประโยชน์ของ CI</p>
+  <div class="fix">
+    <b>แก้:</b> dev push branch + เปิด <b>draft PR</b> ตอนเข้า <code>in_review</code> — CI ได้รัน, QA อ่าน diff จาก PR ได้, และมันประกาศตัวว่ายังไม่พร้อม. QA ผ่าน → <code>gh pr ready</code>. ตีกลับ → dev commit เพิ่มบน branch เดิม ไม่แตกใหม่ (ประวัติการตีกลับจะได้อยู่ใน PR เดียว ตามรอยได้)
+  </div>
+</div>
+
+<div class="issue">
+  <div class="hd"><span class="b b-mid">ต้องนิยาม</span><h4>2.4 &nbsp;QA ตรวจอะไรที่ autoreview ไม่ได้ตรวจ</h4></div>
+  <p>ถ้าไม่แบ่งให้ชัด QA จะกลายเป็น autoreview รอบสอง = ต้นทุนคูณสองโดยไม่ได้ข้อมูลใหม่ แล้วสุดท้ายต่องจะปิดมันทิ้งเพราะรู้สึกว่าไม่คุ้ม</p>
+  <div class="fix"><b>แก้:</b> แบ่งตามตารางในส่วนที่ 4 — dev ตรวจ "ทำงานถูกไหม" (white-box), QA ตรวจ "ทำตรงใบงานไหม + พังของเดิมไหม" (black-box จากใบงาน)</div>
+</div>
+
+<div class="issue">
+  <div class="hd"><span class="b b-mid">ระวัง</span><h4>2.5 &nbsp;2 loop เขียน queue ไฟล์เดียวกัน = lost update</h4></div>
+  <p>ถ้า dev loop กับ QA loop วิ่งคนละเซสชันพร้อมกัน ทั้งคู่จะ read-modify-write <code>queue.json</code> ทับกัน — อันที่เขียนทีหลังลบงานของอีกอันเงียบ ๆ. เคสแบบเดียวกับที่เคยโดนใน vault ตอนสอง session แย่งกัน stage git</p>
+  <div class="fix"><b>แก้:</b> เริ่มด้วย <b>loop เดียว 2 บทบาท</b> (ส่วนที่ 5) ซึ่งไม่มี race เลยเพราะไม่มีอะไรทำงานพร้อมกัน. แยกเป็น 2 loop ต่อเมื่อวัดได้ว่า QA เป็นคอขวดจริง และตอนนั้นค่อยใส่ atomic write + one-writer-per-status</div>
+</div>
+
+<h2 id="s">3 · State machine ฉบับแก้แล้ว</h2>
+<div class="fsm">
+<pre>  todo ◄─────────────────────────┐
+    │                            │ (ไม่ใช่ทางกลับของ QA)
+    ▼                            │
+  claimed ──► blocked_needs_host │
+    │
+    ▼
+  in_progress ─── acceptance + autoreview (dev-side)
+    │  ผ่าน → push + draft PR
+    ▼
+  in_review ─── QA: fresh context, ตรวจตามใบงาน
+    │
+    ├── ผ่าน ──────────────► ready_for_human ──(คน merge)──► done
+    │
+    └── ไม่ผ่าน
+          │  แนบ qa_findings[] + rework_count++
+          ▼
+        rework ──┬─ rework_count &lt; 2 ──► in_progress  (dev แก้ตาม finding)
+                 └─ rework_count = 2 ──► needs_attention</pre>
+</div>
+
+<div class="tw">
+<table>
+<tr><th>เปลี่ยนจากที่ต่องร่าง</th><th>เป็น</th><th>เพราะ</th></tr>
+<tr><td class="mono">ไม่ผ่าน → คอมเมนต์ → todo</td><td class="mono">+ หยิบก่อน todo ปกติ<br>+ rework_count เพดาน 2</td><td>คอมเมนต์แก้เรื่อง "ทำซ้ำแบบเดิม" แล้ว เหลือเรื่องลำดับคิว + การรับประกันว่าจบ</td></tr>
+<tr><td class="mono">ผ่าน → done</td><td class="mono">ผ่าน → ready_for_human</td><td>done = merged by human เท่านั้น</td></tr>
+<tr><td class="mono">in-review</td><td class="mono">in_review + draft PR</td><td>ให้ CI รันและ QA อ่าน diff ได้</td></tr>
+</table>
+</div>
+
+<pre><code>// ใบที่โดนตีกลับ หน้าตาแบบนี้ตอนกลับไปหา dev
+{
+  "id": "q2", "status": "rework", "rework_count": 1,
+  "branch": "loop/q2-date-tests", "pr": 202,
+  "qa_findings": [
+    {"file":"src/utils/date.test.ts","line":12,
+     "issue":"assert เช็คแค่ไม่ throw ไม่ได้เช็คค่าที่ได้",
+     "violates":"acceptance ข้อ 2 (ผลลัพธ์ต้องตรงตามตารางในใบ)",
+     "evidence":"vitest run date.test.ts → เขียวทั้งที่ input ผิดก็ยังเขียว",
+     "severity":"blocking"},
+    {"file":"src/utils/date.ts","line":48,
+     "issue":"เคส DST ยังไม่มีเทสครอบ",
+     "violates":"acceptance ข้อ 3",
+     "severity":"blocking"}
+  ],
+  "proposed": [
+    {"note":"date.ts แยกฟังก์ชันได้อีก", "severity":"non-blocking"}
+  ]
+}</code></pre>
+
+<h2 id="d">4 · ใครตรวจอะไร</h2>
+<div class="tw">
+<table>
+<tr><th></th><th>dev-side (in_progress)</th><th>QA-side (in_review)</th></tr>
+<tr>
+  <td><b>มุมมอง</b></td>
+  <td>White-box — เห็นโค้ดที่ตัวเองเพิ่งเขียนและรู้ว่าทำไม</td>
+  <td>Black-box — เห็นแค่<b>ใบงาน + diff</b> ไม่เห็นเหตุผลของ dev</td>
+</tr>
+<tr>
+  <td><b>คำถามหลัก</b></td>
+  <td>"โค้ดนี้ทำงานตามที่ฉันตั้งใจไหม"</td>
+  <td>"diff นี้ทำสิ่งที่ใบงานขอจริงไหม และพังของเดิมไหม"</td>
+</tr>
+<tr>
+  <td><b>ตรวจ</b></td>
+  <td>typecheck · lint · unit เฉพาะที่แตะ · autoreview บน diff</td>
+  <td>build/integration เต็ม · เทสชุดเดิมทั้งหมด (regression) · acceptance ทุกข้อในใบทีละข้อ</td>
+</tr>
+<tr>
+  <td><b>ตรวจเฉพาะทาง</b></td>
+  <td>—</td>
+  <td>
+    <b>Scope drift:</b> diff แตะเกิน <code>touches</code> ไหม<br>
+    <b>Test theater:</b> เทสที่เพิ่มมา assert ค่าจริงหรือแค่ทำให้เขียว<br>
+    <b>Acceptance ครบ:</b> ใบขอ 3 ข้อ ทำครบ 3 หรือทำ 2<br>
+    <b>Tier drift:</b> ทำไปแล้วกลายเป็นแตะของ L3 ไหม
+  </td>
+</tr>
+<tr>
+  <td><b>ผลลัพธ์</b></td>
+  <td>ผ่าน = ได้ push (draft)</td>
+  <td>ผ่าน = <code>ready_for_human</code> · ไม่ผ่าน = findings ที่ file:line</td>
+</tr>
+</table>
+</div>
+
+<div class="note warn">
+<strong>ข้อห้ามของ QA:</strong> QA <b>ห้ามแก้โค้ดเอง</b>เด็ดขาด แม้จะเห็นว่าแก้แป๊บเดียว. ถ้า QA แก้ได้ มันก็ตรวจงานตัวเองอีก = กลับไปที่ปัญหาเดิมที่ QA ถูกสร้างมาเพื่อแก้. QA เขียนได้แค่ finding เท่านั้น
+</div>
+
+<h3 id="fq">4.1 &nbsp;คอมเมนต์ที่ดีหน้าตายังไง</h3>
+<p>"เขียนคอมเมนต์รายละเอียด" เป็นทางที่ถูก แต่มีกับดักซ่อนอยู่ 2 อัน — ละเอียดผิดทางแล้วจะแย่กว่าไม่ละเอียด:</p>
+
+<div class="tw">
+<table>
+<tr><th>ต้องมี</th><th>ทำไม</th></tr>
+<tr>
+  <td><b>file:line</b></td>
+  <td>dev รอบใหม่ไม่ต้องไล่หาเอง = ประหยัด tick และไม่หาผิดที่</td>
+</tr>
+<tr>
+  <td><b>อ้างข้อของ acceptance ในใบงาน</b><br><span class="k">"ขัดกับ acceptance ข้อ 3"</span></td>
+  <td>บังคับให้ QA <b>ตีกลับได้เฉพาะสิ่งที่ใบงานเรียกร้องจริง</b> — ตัดต้นตอของการตีกลับไม่จบด้วยรสนิยมส่วนตัว. ถ้าอ้างข้อไหนไม่ได้ = ไม่ใช่เหตุให้ตีกลับ</td>
+</tr>
+<tr>
+  <td><b>severity: blocking / non-blocking</b></td>
+  <td>เฉพาะ <code>blocking</code> เท่านั้นที่ตีใบกลับได้. non-blocking ไปลง <code>proposed[]</code> — ไม่งั้นเรื่องจุกจิกจะทำให้ใบวนไม่จบทั้งที่งานหลักถูกแล้ว</td>
+</tr>
+<tr>
+  <td><b>หลักฐานที่รันได้</b><br><span class="k">คำสั่ง + output ที่แดง</span></td>
+  <td>แยก "ตรวจเจอจริง" ออกจาก "รู้สึกว่าน่าจะพัง" — dev จะได้ไม่ไล่แก้ผี</td>
+</tr>
+</table>
+</div>
+
+<div class="note warn">
+<strong>กับดัก 1 — ละเอียดจนกลายเป็นสั่งวิธีแก้:</strong> ถ้า finding เขียนว่า "ให้เปลี่ยนบรรทัด 48 เป็น <code>x ?? y</code>" QA ก็คือคนเขียนโค้ดผ่านมือ dev แล้วมาตรวจงานที่ตัวเองสั่ง — bias ที่ QA ถูกสร้างมาเพื่อกำจัด กลับเข้ามาทางประตูหลัง. finding บอกได้แค่ <b>อะไรผิดเทียบกับใบงาน</b> ห้ามบอกว่าต้องเขียนโค้ดยังไง
+</div>
+<div class="note warn">
+<strong>กับดัก 2 — finding ที่ไม่มีเกณฑ์รองรับ:</strong> "โค้ดนี้อ่านยาก" / "น่าจะแยกฟังก์ชัน" อ้าง acceptance ข้อไหนไม่ได้ = ไม่ใช่ blocking. ของแบบนี้ลง <code>proposed[]</code> ให้ต่องตัดสินทีหลัง. นี่คือกลไกที่กันไม่ให้ QA ตีกลับด้วยรสนิยมจนงานไม่เดิน
+</div>
+
+<h2 id="c">5 · รันยังไง</h2>
+<p>ต่องพูดถึง "qa queue loop" เป็น loop แยก — แนะให้<b>เริ่มที่ loop เดียวสลับ 2 บทบาท</b>ก่อน:</p>
+
+<div class="cards">
+<div class="card yes">
+  <span class="tag">แนะให้เริ่มแบบนี้</span>
+  <h4>1 loop · 2 บทบาท</h4>
+  <p>ทุก tick: เคลียร์คิว <code>in_review</code> ก่อน (สวมหมวก QA) แล้วค่อยหยิบงาน dev ใบใหม่</p>
+  <p><b>ได้:</b> ไม่มี race · state ที่เดียว · debug ง่าย · fresh context ได้จากการ spawn subagent สำหรับ QA</p>
+  <p><b>เสีย:</b> ไม่ขนาน — แต่ WIP=1 อยู่แล้วเลยไม่ได้เสียอะไรจริง</p>
+</div>
+<div class="card no">
+  <span class="tag">ยังไม่ต้อง</span>
+  <h4>2 loop แยกเซสชัน</h4>
+  <p>dev loop กับ qa loop วิ่งพร้อมกันคนละหน้าต่าง</p>
+  <p><b>ต้องมีก่อน:</b> atomic write (tmp+rename) · one-writer-per-status · หลักฐานว่า QA เป็นคอขวดจริง</p>
+  <p><b>ความเสี่ยง:</b> lost update บน queue.json แบบเงียบ ๆ — เจอตอนงานหายไปแล้ว</p>
+</div>
+</div>
+
+<h4>Fresh context ได้จากไหนถ้าอยู่ loop เดียว</h4>
+<p>ตอนถึงคิว QA ให้ <b>spawn subagent</b> ที่ได้รับแค่ 3 อย่าง: ใบงาน (JSON), diff ของ PR, และคำสั่ง acceptance — ไม่ส่ง transcript ของตอนเขียนโค้ดไปด้วย. subagent คืนมาแค่ verdict + findings. นี่คือ fresh context จริงในทางปฏิบัติ และเป็น pattern เดียวกับที่ <code>sd-curator</code> ใช้อยู่ (read-only, คืนผลอย่างเดียว)</p>
+
+<pre><code>tick: อ่าน state
+  ├─ มีใบ in_review?  → spawn QA subagent (ใบ+diff เท่านั้น)
+  │                     ผ่าน → ready_for_human + gh pr ready
+  │                     ไม่ผ่าน → rework + findings
+  │                     wakeup 60s (มีของทำต่อ)
+  ├─ ไม่มี → หยิบ rework ก่อน todo   ← ของค้างมาก่อนของใหม่
+  └─ ไม่มีทั้งคู่ → สรุป + stop</code></pre>
+
+<div class="note">
+<strong>ลำดับความสำคัญในคิว:</strong> <code>rework</code> ต้องมาก่อน <code>todo</code> เสมอ ไม่งั้นใบที่โดนตีกลับจะถูกดองไว้ท้ายแถวขณะที่ loop ไปเปิดงานใหม่เรื่อย ๆ — จบลงที่ PR ค้างครึ่ง ๆ กลาง ๆ เต็มไปหมด (WIP สูงคือศัตรูของทุก queue system)
+</div>
+
+<h2 id="g">6 · Skill grooming — <code>/groom</code></h2>
+<p>อันนี้เห็นด้วยเต็มที่ และมองว่า<b>สำคัญกว่า QA loop</b>. เหตุผลตรงไปตรงมา: จากที่วางไว้ในเอกสารก่อน คุณภาพของ loop = คุณภาพของคิว. QA loop คือการจับของเสียที่<b>ปลายทาง</b> ส่วน grooming คือการไม่ให้ของเสียเข้ามา<b>ตั้งแต่ต้นทาง</b> — ถูกกว่าและได้ผลกว่ามาก</p>
+
+<h3>6.1 สิ่งที่ skill นี้ต้อง<em>ไม่</em>เป็น</h3>
+<div class="note warn">
+<strong>ห้ามเป็นตัวแปลงอัตโนมัติ.</strong> ถ้า <code>/groom</code> รับ req กำกวมแล้ว "เติมช่องที่ขาดให้เอง" มันคือการ<b>เดา design แล้วประทับตราว่าใบนี้ผ่านเกณฑ์</b> — queue poisoning ที่แนบเนียนกว่าเดิม เพราะตอนนี้ใบปลอมมีหน้าตาถูกต้องครบทุกช่อง. หน้าที่ของมันคือ<b>ถามจนครบ หรือปฏิเสธ</b> ไม่ใช่เติมเอง
+</div>
+
+<h3>6.2 การทำงาน</h3>
+<ol class="steps">
+  <li><b>รับ req จากอะไรก็ได้</b><span class="d">พิมพ์สด · ข้อความ Linear · fleeting note · screenshot (OCR) · ผล QA ที่เด้ง needs_attention</span></li>
+  <li><b>แตกเป็นใบย่อยที่ทำจบได้ใน 1 tick</b><span class="d">req ก้อนใหญ่ = หลายใบ + <code>depends_on</code> ระหว่างกัน. ใบที่ประเมินว่าใหญ่เกิน 1 tick ต้องแตกต่อ</span></li>
+  <li><b>Classify tier แบบ keyword/path</b><span class="d">แตะ schema/API/CI → L2 · แตะ secret/RBAC/payment/PII/prod → <b>L3 ไม่เข้าคิว</b> ตัดออกตั้งแต่ตรงนี้เลย · ไม่ชัด = เด้งขึ้นเลนสูงกว่า</span></li>
+  <li><b>ตรวจ 4 เกณฑ์ ticket contract</b><span class="d">acceptance ที่เครื่องตรวจได้ / ไม่มี design ค้าง / blast radius รู้ / ย้อนได้</span></li>
+  <li><b>ช่องที่ขาด = ถามต่อง ทีละคำถามที่ตอบง่าย</b><span class="d">"acceptance ของใบนี้คือคำสั่งไหน" ไม่ใช่ "ช่วยอธิบายเพิ่ม". ถ้าต่องไม่ตอบ/ตอบไม่ได้ = ใบนั้นยังไม่พร้อม จบ</span></li>
+  <li><b>เขียนออก 2 ทาง</b><span class="d">ผ่านครบ → <code>queue.json</code> · ไม่ผ่าน → <code>needs_grooming.md</code> พร้อมระบุว่าขาดข้อไหน · L3 → <code>escalations</code></span></li>
+</ol>
+
+<h3>6.3 Output ที่ควรได้ทุกครั้ง</h3>
+<pre><code>/groom "แก้ dep GHSA-r28c ทั้ง acme-app กับ lawyer-app แล้วก็อยากให้ auth ดีขึ้นด้วย"
+
+→ เข้าคิว 2 ใบ
+   q1  acme-app: override dep + build/typecheck ผ่าน          L2
+   q2  lawyer-app: override dep + build ผ่าน               L2  (base=main → PR only)
+→ ไม่เข้าคิว 1 ใบ
+   "auth ดีขึ้น" — ขาด: acceptance, design ยังไม่เคาะ,
+   blast radius ไม่รู้, แตะ auth = อาจ L3
+   → needs_grooming.md  (ถามกลับ 2 ข้อ)</code></pre>
+
+<div class="note ok">
+<strong>ตัวชี้วัดของ skill นี้:</strong> ดูที่ <b>first-pass rate ของใบที่มันปล่อยผ่าน</b>. ถ้าใบที่ groom แล้วยังโดน QA ตีกลับบ่อย แปลว่าเกณฑ์หย่อนเกิน — ต้องไปรัดที่ <code>/groom</code> ไม่ใช่ไปโทษ dev loop. เกณฑ์การคัดคือของที่ควรจะแน่นขึ้นเรื่อย ๆ ตามที่เจอเคสจริง
+</div>
+
+<h2 id="r">7 · ลำดับที่ควรทำ</h2>
+<ol class="steps">
+  <li><b>/groom ก่อน</b> <span class="b b-lo">เริ่มที่นี่</span>
+    <span class="d">ให้ค่าทันทีแม้ยังไม่มี loop อะไรเลย — แค่มีคิวที่เขียนดีก็ช่วยงานมือได้แล้ว และเป็น input ที่จำเป็นของทุกอย่างที่ตามมา. ยังไม่ต้องรอ dev loop</span></li>
+  <li><b>dev loop เดี่ยว จบที่ ready_for_human</b>
+    <span class="d">ยังไม่มี QA — dev-side acceptance + autoreview แล้วเปิด draft PR ให้ต่องดูเอง. รอบนี้คือการวัดว่า first-pass rate จริงเท่าไร <b>ถ้าสูงอยู่แล้ว QA loop อาจไม่จำเป็น</b> ประหยัดไปเลย</span></li>
+  <li><b>เพิ่ม QA เป็นบทบาทที่ 2 ใน loop เดิม</b>
+    <span class="d">ทำเมื่อข้อ 2 บอกว่า first-pass ต่ำกว่า 70% จริง. ใช้ subagent เป็น fresh context ตามส่วนที่ 5</span></li>
+  <li><b>แยกเป็น 2 loop</b>
+    <span class="d">ต่อเมื่อวัดได้ว่า QA เป็นคอขวด — และตอนนั้นต้องมี atomic write + one-writer-per-status ก่อน</span></li>
+</ol>
+
+<div class="note">
+<strong>เหตุผลที่ไม่ทำ QA loop พร้อมกันเลย:</strong> QA loop เพิ่มต้นทุนทุกใบและเพิ่มจุดพังใหม่ 5 จุดตามส่วนที่ 2. ถ้า first-pass rate ของ dev loop สูงพออยู่แล้ว มันคือ<b>การจ่ายเพื่อแก้ปัญหาที่ยังไม่มี</b>. วัดก่อนแล้วค่อยเพิ่ม — และเราจะรู้ตัวเลขนั้นภายในรอบเดียว
+</div>
+
+<hr>
+<p class="sub"><a href="plan.html">แผนหลัก</a> · <a href="dev-queue-loop.html">Dev Queue Loop</a></p>
+
+</div>
+</body>
+</html>

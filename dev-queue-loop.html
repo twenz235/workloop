@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dev Queue Loop — คอนเซปต์</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#faf9f6; --ink:#1c1b19; --ink-soft:#54514b; --ink-faint:#8b8781;
+    --line:#dedad2; --line-strong:#c4bfb5; --tint:#f2efe9;
+    --rose:#b0757a; --rose-bg:#f7edee;
+    --sage:#6c7f6b; --sage-bg:#eef2ed;
+    --amber:#9a7d45; --amber-bg:#f6f0e4;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:'Sarabun',-apple-system,sans-serif;font-weight:300;font-size:16px;line-height:1.75}
+  .wrap{max-width:920px;margin:0 auto;padding:64px 28px 120px}
+  code,pre,.mono{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:13.5px}
+  code{background:var(--tint);padding:1px 5px;border-radius:2px;font-weight:400}
+  pre{background:var(--tint);border:1px solid var(--line);border-radius:2px;
+    padding:16px 18px;overflow-x:auto;line-height:1.65;margin:16px 0}
+  pre code{background:none;padding:0}
+  h1{font-size:30px;font-weight:600;letter-spacing:-.01em;margin:0 0 8px}
+  h2{font-size:21px;font-weight:600;margin:64px 0 4px;padding-bottom:10px;border-bottom:1px solid var(--line-strong)}
+  h3{font-size:16.5px;font-weight:600;margin:34px 0 8px}
+  h4{font-size:15px;font-weight:600;margin:22px 0 6px;color:var(--ink-soft)}
+  p{margin:10px 0}
+  .sub{color:var(--ink-faint);font-size:14px;margin:0 0 4px}
+  .lead{color:var(--ink-soft);font-size:15.5px}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  hr{border:0;border-top:1px solid var(--line);margin:40px 0}
+  a{color:var(--ink);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
+  .toc{border:1px solid var(--line);border-radius:2px;padding:20px 24px;margin:36px 0 8px;background:#fff}
+  .toc h4{margin:0 0 10px;color:var(--ink-faint);font-size:12.5px;letter-spacing:.08em;text-transform:uppercase}
+  .toc ol{margin:0;padding-left:20px;font-size:14.5px}
+  .toc li{margin:3px 0}
+  .tw{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:2px;background:#fff}
+  table{border-collapse:collapse;width:100%;min-width:620px;font-size:14px}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-weight:600;background:var(--tint);white-space:nowrap;font-size:13px;letter-spacing:.02em}
+  tr:last-child td{border-bottom:0}
+  td.mono,th.mono{font-family:'JetBrains Mono',monospace;font-size:12.5px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:20px 0}
+  .card{border:1px solid var(--line);border-radius:2px;padding:18px 20px;background:#fff}
+  .card h4{margin:0 0 4px;font-size:15px;color:var(--ink)}
+  .card .tag{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);display:block;margin-bottom:8px}
+  .card p{font-size:14px;color:var(--ink-soft);margin:6px 0}
+  .card.yes{border-left:3px solid var(--sage)}
+  .card.no{border-left:3px solid var(--rose)}
+  .b{display:inline-block;font-size:11.5px;letter-spacing:.04em;padding:2px 8px;border-radius:2px;border:1px solid;white-space:nowrap;font-weight:400}
+  .b-hi{color:var(--rose);border-color:var(--rose);background:var(--rose-bg)}
+  .b-mid{color:var(--amber);border-color:var(--amber);background:var(--amber-bg)}
+  .b-lo{color:var(--sage);border-color:var(--sage);background:var(--sage-bg)}
+  .b-n{color:var(--ink-faint);border-color:var(--line-strong);background:var(--tint)}
+  .note{border:1px solid var(--line-strong);border-left:3px solid var(--ink-soft);border-radius:2px;padding:14px 18px;margin:20px 0;background:#fff;font-size:14.5px}
+  .note.warn{border-left-color:var(--rose)}
+  .note.ok{border-left-color:var(--sage)}
+  .note strong{font-weight:600}
+  .steps{list-style:none;padding:0;margin:20px 0;counter-reset:s}
+  .steps li{counter-increment:s;position:relative;padding:0 0 20px 42px;margin:0;border-left:1px solid var(--line)}
+  .steps li:last-child{border-left-color:transparent;padding-bottom:0}
+  .steps li::before{content:counter(s);position:absolute;left:-13px;top:0;width:25px;height:25px;border-radius:50%;
+    background:var(--paper);border:1px solid var(--line-strong);color:var(--ink-soft);
+    font-size:12px;display:flex;align-items:center;justify-content:center}
+  .steps b{font-weight:600}
+  .steps .d{color:var(--ink-soft);font-size:14px;display:block;margin-top:2px}
+  .k{color:var(--ink-faint);font-size:13px}
+  .fsm{background:#fff;border:1px solid var(--line);border-radius:2px;padding:20px 22px;margin:18px 0;overflow-x:auto}
+  .fsm pre{background:none;border:0;padding:0;margin:0;font-size:13px;line-height:1.9}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="sub">2026-08-11 · sd · ต่อจาก <a href="plan.html">แผนหลัก</a> ส่วนที่ 4</p>
+<h1>Dev Queue Loop</h1>
+<p class="lead">คอนเซปต์เต็มของเลน B — loop ที่ให้ agent ทำงาน dev เองได้ต่อเนื่อง โดยไม่ปล่อยให้มันตัดสินใจว่าอะไรควรทำ</p>
+
+<div class="toc">
+<h4>สารบัญ</h4>
+<ol>
+  <li><a href="#i">ไอเดียแกน — แยกรอบคิดออกจากรอบทำ</a></li>
+  <li><a href="#c">Ticket contract — ใบแบบไหนเข้าคิวได้</a></li>
+  <li><a href="#f">วงจรชีวิตของใบงาน</a></li>
+  <li><a href="#v">Invariant 6 ข้อ</a></li>
+  <li><a href="#g">Git model — ทำไมต้องแบนไม่ stack</a></li>
+  <li><a href="#x">Crash safety — tick ที่ตายกลางทาง</a></li>
+  <li><a href="#w">โหมดพังที่เฉพาะกับเลนนี้</a></li>
+  <li><a href="#m">ตัววัดว่ามันเวิร์กจริงไหม</a></li>
+  <li><a href="#e">เดินจริง 1 รอบ</a></li>
+</ol>
+</div>
+
+<h2 id="i">1 · ไอเดียแกน</h2>
+<p>ปัญหาของ agent loop ทั่วไปไม่ใช่ "เขียนโค้ดไม่เก่ง" แต่คือ <b>ไม่มีนิยามของคำว่าเสร็จ</b>. ralph วน prompt เดิมไปเรื่อย ๆ แล้วประเมินเองว่าพอหรือยัง — ซึ่งแปลว่าเงื่อนไขจบอยู่ในหัว agent, มองไม่เห็น, ตรวจไม่ได้, และเลื่อนได้ตลอด</p>
+
+<p>Dev queue loop ย้ายเงื่อนไขจบออกมาข้างนอก: <b>งานที่ยังไม่จบ = แถวของใบงานบนดิสก์ที่นับได้</b> คิวว่าง = จบ. ไม่ใช่การตัดสินใจ แต่เป็นการนับ</p>
+
+<div class="tw">
+<table>
+<tr><th></th><th>Ralph loop</th><th>Dev queue loop</th></tr>
+<tr><td>หน่วยของงาน</td><td>prompt ก้อนเดียวไม่เปลี่ยน</td><td>ใบงานที่แตกไว้แล้ว หยิบทีละใบ</td></tr>
+<tr><td>เงื่อนไขจบ</td><td>agent ประเมินเอง</td><td>คิวว่าง — ตรวจได้ด้วยตาคน</td></tr>
+<tr><td>ความคืบหน้า</td><td>ดูไม่ออกจนกว่าจะเปิดดู</td><td>3/8 ใบ done, 1 blocked</td></tr>
+<tr><td>เจอปัญหากลางทาง</td><td>วนแก้ในบริบทเดิมจนงง</td><td>ใบนั้น <code>needs_attention</code> ใบอื่นเดินต่อ</td></tr>
+<tr><td>Rollback</td><td>ต้องแยก diff เองว่าอันไหนของรอบไหน</td><td>1 ใบ = 1 branch = 1 PR</td></tr>
+</table>
+</div>
+
+<h3>1.1 กฎที่ทำให้ทั้งระบบไม่พัง</h3>
+<div class="note warn">
+<strong>loop เติมงานเข้าคิวเองไม่ได้.</strong> คิวถูกเขียนโดยคน (หรือโดยรอบวางแผนที่มีคนอยู่ด้วย) เท่านั้น. ถ้า loop เขียนงานใหม่ให้ตัวเองทำได้เมื่อไร มันกลับไปเป็น open-ended ทันที — ไม่มีเพดาน ไม่มีวันจบ และขอบเขตขยายโดยไม่มีใครอนุมัติ
+</div>
+<p>สิ่งที่ loop ทำได้เมื่อเจองานข้างเคียง คือหย่อนลง <code>proposed[]</code> ซึ่งเป็นถังที่ <b>ไม่มีวันถูกหยิบมาทำในรอบนี้</b> — เอาไว้ให้ต่องอ่านตอน loop จบแล้วตัดสินว่าจะโปรโมทเข้าคิวรอบหน้าไหม. นี่คือเส้นแบ่งระหว่าง "รอบคิด" กับ "รอบทำ":</p>
+<ul>
+  <li><b>รอบคิด</b> (มีคนอยู่) — แตกงาน, เคาะ design, เรียงลำดับ, กำหนด acceptance → ผลผลิตคือคิว</li>
+  <li><b>รอบทำ</b> (ไม่มีคนอยู่) — ทำตามที่เคาะแล้ว จนถึง PR → ผลผลิตคือ PR + รายงาน</li>
+</ul>
+<p>Loop จึงไม่ใช่ "ผู้ช่วยที่คิดเองได้" แต่เป็น <b>ตัวขยาย throughput ของงานที่ตัดสินใจไปแล้ว</b> ซึ่งเป็นสิ่งที่มันทำได้ดีจริงโดยไม่ต้องเชื่อใจมันเกินเหตุ</p>
+
+<h2 id="c">2 · Ticket contract</h2>
+<p>คุณภาพของ loop นี้ = คุณภาพของคิว ไม่ใช่ความฉลาดของ agent. ใบงานจะเข้าคิวได้ต้องผ่านครบ 4 ข้อ ขาดข้อเดียวคือไม่เข้า:</p>
+
+<div class="tw">
+<table>
+<tr><th>เกณฑ์</th><th>แปลว่า</th><th>ถ้าขาด</th></tr>
+<tr>
+  <td><b>Acceptance ที่เครื่องตรวจได้</b></td>
+  <td>มีคำสั่งที่รันแล้วได้เขียว/แดง — <code>pnpm build</code>, <code>vitest run x.test.ts</code></td>
+  <td>agent ต้องประเมินเองว่า "ดีพอไหม" = เดา</td>
+</tr>
+<tr>
+  <td><b>ไม่มี design decision ค้าง</b></td>
+  <td>ทางเลือกถูกเคาะมาแล้ว เหลือแค่ลงมือ</td>
+  <td>agent เลือกทางเอง แล้วเดินไปไกลก่อนใครจะทัก</td>
+</tr>
+<tr>
+  <td><b>Blast radius รู้ล่วงหน้า</b></td>
+  <td>บอกได้คร่าว ๆ ว่าจะแตะไฟล์/โมดูลไหน</td>
+  <td>ประเมิน tier ไม่ได้ = คุมความเสี่ยงไม่ได้</td>
+</tr>
+<tr>
+  <td><b>ย้อนได้</b></td>
+  <td>ผิดแล้ว revert branch จบ ไม่มีผลค้างนอก git</td>
+  <td>ไม่ใช่งานของ loop → ต้องมีคนอยู่ด้วย</td>
+</tr>
+</table>
+</div>
+
+<div class="cards">
+<div class="card yes">
+  <span class="tag">เข้าคิวได้</span>
+  <h4>"override transitive dep ให้พ้น GHSA-r28c แล้วให้ build + typecheck ผ่าน"</h4>
+  <p>acceptance = 2 คำสั่ง · ทางแก้เคาะแล้ว · แตะแค่ manifest+lock · revert ได้</p>
+</div>
+<div class="card yes">
+  <span class="tag">เข้าคิวได้</span>
+  <h4>"เพิ่มเทส 3 เคสให้ <code>parseThaiDate</code> ตามตารางในใบ"</h4>
+  <p>เคสระบุครบ · ไม่แตะโค้ดโปรดักชัน · เขียวคือจบ</p>
+</div>
+<div class="card no">
+  <span class="tag">ห้ามเข้าคิว</span>
+  <h4>"ปรับปรุงระบบ auth ให้ดีขึ้น"</h4>
+  <p>ไม่มี acceptance · design ยังไม่เคาะ · blast radius ไม่รู้ · แตะ RBAC = L3</p>
+</div>
+<div class="card no">
+  <span class="tag">ห้ามเข้าคิว</span>
+  <h4>"หาสาเหตุที่ prod ช้าแล้วแก้"</h4>
+  <p>debug คืองานที่ต้องคิด ไม่ใช่งานกลไก — และปลายทางแตะ prod</p>
+</div>
+</div>
+
+<pre><code>// ใบงาน 1 ใบหน้าตาแบบนี้
+{
+  "id": "q1",
+  "title": "override transitive dep GHSA-r28c",
+  "tier": "L2",
+  "repo": "acme/acme-app",
+  "base": "dev",
+  "touches": ["package.json", "pnpm-lock.yaml"],
+  "acceptance": ["pnpm install", "pnpm typecheck", "pnpm build"],
+  "depends_on": [],
+  "status": "todo",
+  "attempts": 0,
+  "max_attempts": 2
+}</code></pre>
+
+<div class="note">
+<strong>ทำไมต้อง <code>max_attempts</code>:</strong> ใบที่ลองแล้วไม่ผ่าน 2 ครั้งไม่ใช่ใบที่ "ต้องพยายามอีกหน่อย" แต่คือใบที่<b>เขียนไม่ดีตั้งแต่ต้น</b> — ข้อมูลไม่พอ หรือปัญหาลึกกว่าที่คิด. ลองซ้ำครั้งที่ 3 คือเผา token กับสมมติฐานที่ผิดอยู่แล้ว ให้เด้งเป็น <code>needs_attention</code> ไปเลย
+</div>
+
+<h2 id="f">3 · วงจรชีวิตของใบงาน</h2>
+<div class="fsm">
+<pre>  todo
+    │  หยิบ (WIP=1)
+    ▼
+  claimed ──────────► blocked_needs_host   (tier L3 / dep ยังไม่ done)
+    │  branch + แก้
+    ▼
+  in_progress
+    │  acceptance + autoreview
+    ├── ผ่าน ──► pr_open ──(คนกด merge)──► done
+    └── ไม่ผ่าน ─┬─ attempts &lt; max ──► todo   (ลองใหม่ tick หน้า)
+                 └─ attempts = max ──► needs_attention</pre>
+</div>
+
+<div class="tw">
+<table>
+<tr><th>status</th><th>แปลว่า</th><th>loop ทำอะไรต่อ</th></tr>
+<tr><td class="mono">todo</td><td>พร้อมหยิบ</td><td>หยิบใบบนสุดที่ dep ครบ</td></tr>
+<tr><td class="mono">claimed</td><td>จองแล้ว ยังไม่แตะโค้ด</td><td>ถ้าค้างเกิน stale timeout → reconcile</td></tr>
+<tr><td class="mono">in_progress</td><td>มี branch + diff แล้ว</td><td>ทำต่อจนถึง acceptance</td></tr>
+<tr><td class="mono">pr_open</td><td>PR เปิดแล้ว รอคนกด</td><td>ไม่ทำอะไรต่อ — ไม่ merge เอง</td></tr>
+<tr><td class="mono">needs_attention</td><td>เทสแดง / review ติด / ลองครบแล้ว</td><td>ข้าม เก็บเข้ารายงานตอนจบ</td></tr>
+<tr><td class="mono">blocked_needs_host</td><td>L3 หรือรอ dep</td><td>ข้าม ไม่แตะเด็ดขาด</td></tr>
+<tr><td class="mono">done</td><td>merge แล้ว</td><td>—</td></tr>
+</table>
+</div>
+
+<h2 id="v">4 · Invariant 6 ข้อ</h2>
+<p>ข้อที่ต้องจริงตลอดเวลา ถ้าข้อใดข้อหนึ่งไม่จริงแปลว่า loop พังแล้วแม้จะยังดูเดินอยู่:</p>
+<ol>
+  <li><b>WIP = 1</b> — มีใบสถานะ <code>in_progress</code> ได้ทีละใบเท่านั้น. คาบสองใบ = diff ปนกัน = แยก rollback ไม่ออก</li>
+  <li><b>1 ใบ = 1 branch = 1 PR</b> — หน่วยของงาน, หน่วยของ review, หน่วยของการย้อน ต้องเป็นก้อนเดียวกัน</li>
+  <li><b>Persist ก่อน schedule เสมอ</b> — เขียน queue+journal ให้เสร็จก่อนตั้ง wakeup ทุกครั้ง</li>
+  <li><b>Fail closed</b> — อะไรไม่แน่ใจ (เทสแดง, review ติด, tier ไม่ชัด) ให้หยุดใบนั้น ไม่ push. loop ไม่มีสิทธิ์ "ปล่อยผ่านไปก่อน"</li>
+  <li><b>ไม่มี side effect นอก git ที่ย้อนไม่ได้</b> — ห้ามส่งเมล ห้ามยิง API จริง ห้าม migrate. PR คือปลายทางสูงสุด</li>
+  <li><b>STOP ชนะทุกอย่าง</b> — เจอไฟล์ STOP ตอนต้น tick = จบทันที ไม่ว่ากำลังทำอะไรค้าง</li>
+</ol>
+
+<h2 id="g">5 · Git model</h2>
+<p>ทุกใบแตก branch จาก <b>base เดียวกัน</b> (<code>dev</code>) แบบแบน ไม่ stack ต่อกัน:</p>
+<pre><code>dev ──┬── loop/q1-dep-override      → PR #201
+      ├── loop/q2-date-tests        → PR #202
+      └── loop/q4-lint-config       → PR #203</code></pre>
+
+<p><b>ทำไมไม่ stack:</b> ถ้า q2 แตกจาก q1 แล้วต่องไม่ merge q1 (หรือขอแก้ก่อน) — q2 กับ q3 ที่ต่อยอดมาจะพังตามกันหมด ทั้งที่เนื้องานมันไม่เกี่ยวกันเลย. แบนไว้แปลว่าแต่ละ PR ตัดสินใจอิสระ merge เรียงยังไงก็ได้</p>
+
+<p><b>แล้วใบที่ขึ้นต่อกันจริง ๆ?</b> ใช้ <code>depends_on</code> — ถ้า dep ยังไม่ <code>done</code> (merge แล้ว) ให้ข้ามใบนั้นไปก่อน ไม่ใช่ไปแตกต่อจาก branch ที่ยังลอยอยู่. ความขึ้นต่อกันเป็นเรื่องของ <b>ลำดับการทำ</b> ไม่ใช่ <b>โครง branch</b></p>
+
+<div class="note">
+<strong>Base drift:</strong> loop ที่วิ่งนานหลายชั่วโมง base จะเคลื่อน (ต่อง merge อย่างอื่นเข้า dev). ก่อนหยิบใบใหม่ทุกครั้งให้ <code>git fetch</code> แล้วแตกจาก <code>origin/dev</code> ล่าสุดเสมอ — ไม่ใช่จาก local ที่ค้างมาตั้งแต่ tick แรก
+</div>
+
+<h2 id="x">6 · Crash safety</h2>
+<p>เซสชันตายกลาง <code>in_progress</code> เป็นเรื่องที่ต้องเกิดแน่ ๆ (เครื่อง sleep, เซสชันปิด, tool error). tick แรกหลังกลับมาต้องทำ <b>reconcile</b> ก่อนหยิบงานใหม่:</p>
+
+<ol class="steps">
+  <li><b>เจอใบค้างสถานะ claimed / in_progress</b><span class="d">ดู <code>claimed_at</code> — เกิน stale timeout (เช่น 30 นาที) ถือว่าค้างจริง</span></li>
+  <li><b>ไปดูความจริงที่ git ไม่ใช่ที่ queue</b><span class="d">branch ของใบนั้นมีอยู่ไหม, มี commit ไหม, diff ครอบคลุมงานหรือยัง — <b>git คือความจริง queue เป็นแค่สิ่งที่ตั้งใจไว้</b></span></li>
+  <li><b>ตัดสิน 3 ทาง</b><span class="d">ไม่มี branch/diff → คืนเป็น <code>todo</code> · มี diff ครบ → เดินต่อจากขั้น acceptance · diff ครึ่ง ๆ กลาง ๆ ตีความยาก → <code>needs_attention</code> อย่าเดาว่ามันคิดอะไรอยู่</span></li>
+  <li><b>บันทึกเหตุผลที่ตัดสินแบบนั้นลง journal</b><span class="d">ตอนต่องมาไล่ทีหลังจะได้รู้ว่า branch ค้างนั้นมาจากไหน</span></li>
+</ol>
+
+<h2 id="w">7 · โหมดพังที่เฉพาะกับเลนนี้</h2>
+<div class="tw">
+<table>
+<tr><th>อาการ</th><th>ระดับ</th><th>ต้นเหตุ</th><th>กัน</th></tr>
+<tr>
+  <td><b>Queue poisoning</b> — ใบกำกวมหลุดเข้าคิว แล้ว agent เดา design เองจนได้ PR ที่ผิดทาง</td>
+  <td><span class="b b-hi">สูง</span></td>
+  <td>เขียนใบตอนรีบ ข้าม ticket contract</td>
+  <td>บังคับ 4 เกณฑ์ตอน<b>เขียนคิว</b> ไม่ใช่ตอน loop วิ่ง — จุดคุมคุณภาพอยู่ที่รอบคิด</td>
+</tr>
+<tr>
+  <td><b>Scope creep ในใบ</b> — เจอของข้างเคียงแล้วแก้พ่วงไปด้วย</td>
+  <td><span class="b b-hi">สูง</span></td>
+  <td>สัญชาตญาณ "เห็นแล้วเก็บให้เลย"</td>
+  <td>เจอ = หย่อนลง <code>proposed[]</code> ห้ามแก้ในใบนี้. diff ต้องตรงกับ <code>touches</code></td>
+</tr>
+<tr>
+  <td><b>Green-washing</b> — ข้ามเทสแดงเพื่อให้คิวเดินสวย</td>
+  <td><span class="b b-hi">สูง</span></td>
+  <td>ตัวชี้วัด "ใบเสร็จ" ดันให้อยากผ่าน</td>
+  <td>Fail closed + วัด first-pass rate ไม่ใช่จำนวนใบ. รายงานต้องระบุแดง/pre-existing ตามจริง</td>
+</tr>
+<tr>
+  <td><b>Dependency deadlock</b> — ทุกใบรอ dep ที่ยังไม่ merge คิวเดินไม่ได้</td>
+  <td><span class="b b-mid">กลาง</span></td>
+  <td>เรียงคิวโดยไม่ดู dep</td>
+  <td>ทุกใบ blocked = stop + รายงาน อย่าวนเปล่ารอคนกด merge</td>
+</tr>
+<tr>
+  <td><b>Base drift / conflict สะสม</b></td>
+  <td><span class="b b-mid">กลาง</span></td>
+  <td>แตก branch จาก local ที่ค้างเก่า</td>
+  <td>fetch + แตกจาก <code>origin/&lt;base&gt;</code> ทุกใบ</td>
+</tr>
+<tr>
+  <td><b>PR ท่วม</b> — เปิด 8 PR รวดให้คนรีวิว</td>
+  <td><span class="b b-lo">ต่ำ</span></td>
+  <td>คิวยาวเกินกำลังรีวิวของคน</td>
+  <td>เพดาน <code>max_open_prs</code> (เช่น 3) ชนแล้ว stop รอเคลียร์</td>
+</tr>
+</table>
+</div>
+
+<h2 id="m">8 · ตัววัด</h2>
+<p>อย่าวัดว่า loop ทำได้กี่ใบ — วัดว่ามันสร้างงานให้คนเพิ่มหรือลด:</p>
+<div class="tw">
+<table>
+<tr><th>ตัววัด</th><th>คำนวณ</th><th>เกณฑ์</th><th>ต่ำกว่าเกณฑ์ = แก้ที่</th></tr>
+<tr>
+  <td><b>First-pass rate</b></td>
+  <td>PR ที่ merge โดยไม่ต้องแก้ ÷ PR ทั้งหมด</td>
+  <td>≥ 70%</td>
+  <td><b>ticket contract</b> ไม่ใช่ prompt ของ loop</td>
+</tr>
+<tr>
+  <td><b>Escalation rate</b></td>
+  <td>ใบที่จบด้วย needs_attention/blocked</td>
+  <td>≤ 25%</td>
+  <td>การคัดใบเข้าคิว — เอางานที่ยังต้องคิดมาใส่</td>
+</tr>
+<tr>
+  <td><b>Revert rate</b></td>
+  <td>PR ที่ merge แล้วต้องย้อน</td>
+  <td>≈ 0</td>
+  <td>acceptance อ่อนเกิน — เพิ่มคำสั่งตรวจ</td>
+</tr>
+<tr>
+  <td><b>Token / ใบที่ merge</b></td>
+  <td>token ทั้ง loop ÷ ใบที่ merge จริง</td>
+  <td>เทียบกับทำเอง</td>
+  <td>ถ้าแพงกว่าทำเอง = งานประเภทนั้นไม่ควรเข้า loop</td>
+</tr>
+</table>
+</div>
+<div class="note ok">
+<strong>อ่านตัวเลขให้ถูก:</strong> first-pass ต่ำ <b>ไม่ได้แปลว่า agent โง่</b> — เกือบทุกครั้งแปลว่าคิวถูกเขียนหลวมเกินไป. จุดที่ต้องกลับไปแก้คือรอบคิด ไม่ใช่ไปจูน prompt ของรอบทำ
+</div>
+
+<h2 id="e">9 · เดินจริง 1 รอบ</h2>
+<pre><code>tick 4  09:12  หยิบ q2 (L1, date tests)
+               fetch → แตก loop/q2-date-tests จาก origin/dev
+               เขียนเทส 3 เคส → vitest run → 2 ผ่าน 1 แดง
+               attempts 1/2 → แก้ assertion timezone → เขียวครบ
+               autoreview: ผ่าน · push · PR #202 → dev
+               q2.status = pr_open
+               wakeup 90s (มีใบค้าง ไม่ได้รออะไร)  noop:false
+
+tick 5  09:14  q3 tier=L3 (rotate API key)
+               → blocked_needs_host + escalations[]  ไม่แตะ
+               หยิบ q4 ต่อ...
+
+tick 8  09:41  คิวไม่เหลือ todo
+               สรุป: 3 merged-ready · 1 needs_attention (q5 เทสแดง
+               pre-existing ที่ utils/fx.test.ts:42) · 1 blocked (q3)
+               proposed[]: 2 อย่างที่เจอระหว่างทาง ยังไม่ได้ทำ
+               ScheduleWakeup(stop:true)</code></pre>
+
+<p>สิ่งที่ต่องได้ตอนกลับมา: PR รอกด 3 ใบ, ของที่ติดจริง 1 อย่างพร้อม file:line, ของที่ต้องตัดสินใจเอง 1 อย่าง, และข้อเสนออีก 2 ข้อที่ loop ไม่ได้ทำเอง — ทุกอย่างเป็นลายลักษณ์ ไล่ย้อนได้จาก journal</p>
+
+<hr>
+<p class="sub">กลับไป <a href="plan.html">แผนหลัก</a> · เลนนี้อยู่ Phase 3 ของ rollout — ทำหลัง kernel ผ่านการใช้จริงจากเลน A และ C แล้ว</p>
+
+</div>
+</body>
+</html>

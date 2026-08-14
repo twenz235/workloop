@@ -1,0 +1,4 @@
+interface:
+  display_name: "Groom Loop Card"
+  short_description: "Turn a request into a ready Linear loop card"
+  default_prompt: "Use $groom to clarify this request and preview a Linear-ready loop card."

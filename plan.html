@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loop AI Workflow — แผน + สถาปัตยกรรม</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#faf9f6;
+    --ink:#1c1b19;
+    --ink-soft:#54514b;
+    --ink-faint:#8b8781;
+    --line:#dedad2;
+    --line-strong:#c4bfb5;
+    --tint:#f2efe9;
+    --rose:#b0757a;
+    --rose-bg:#f7edee;
+    --sage:#6c7f6b;
+    --sage-bg:#eef2ed;
+    --amber:#9a7d45;
+    --amber-bg:#f6f0e4;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:'Sarabun',-apple-system,sans-serif;font-weight:300;
+    font-size:16px;line-height:1.75;
+  }
+  .wrap{max-width:920px;margin:0 auto;padding:64px 28px 120px}
+  code,pre,.mono{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:13.5px}
+  code{background:var(--tint);padding:1px 5px;border-radius:2px;font-weight:400}
+  pre{
+    background:var(--tint);border:1px solid var(--line);border-radius:2px;
+    padding:16px 18px;overflow-x:auto;line-height:1.65;margin:16px 0;
+  }
+  pre code{background:none;padding:0}
+  h1{font-size:30px;font-weight:600;letter-spacing:-.01em;margin:0 0 8px}
+  h2{
+    font-size:21px;font-weight:600;margin:64px 0 4px;
+    padding-bottom:10px;border-bottom:1px solid var(--line-strong);
+  }
+  h3{font-size:16.5px;font-weight:600;margin:34px 0 8px}
+  h4{font-size:15px;font-weight:600;margin:22px 0 6px;color:var(--ink-soft)}
+  p{margin:10px 0}
+  .sub{color:var(--ink-faint);font-size:14px;margin:0 0 4px}
+  .lead{color:var(--ink-soft);font-size:15.5px}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  hr{border:0;border-top:1px solid var(--line);margin:40px 0}
+  a{color:var(--ink);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
+
+  /* TOC */
+  .toc{border:1px solid var(--line);border-radius:2px;padding:20px 24px;margin:36px 0 8px;background:#fff}
+  .toc h4{margin:0 0 10px;color:var(--ink-faint);font-size:12.5px;letter-spacing:.08em;text-transform:uppercase}
+  .toc ol{margin:0;padding-left:20px;font-size:14.5px}
+  .toc li{margin:3px 0}
+
+  /* tables */
+  .tw{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:2px;background:#fff}
+  table{border-collapse:collapse;width:100%;min-width:600px;font-size:14px}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-weight:600;background:var(--tint);white-space:nowrap;font-size:13px;letter-spacing:.02em}
+  tr:last-child td{border-bottom:0}
+  td.mono,th.mono{font-family:'JetBrains Mono',monospace;font-size:12.5px}
+
+  /* cards */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:20px 0}
+  .card{border:1px solid var(--line);border-radius:2px;padding:18px 20px;background:#fff}
+  .card h4{margin:0 0 4px;font-size:15px;color:var(--ink)}
+  .card .tag{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);display:block;margin-bottom:8px}
+  .card p{font-size:14px;color:var(--ink-soft);margin:6px 0}
+
+  /* badges */
+  .b{display:inline-block;font-size:11.5px;letter-spacing:.04em;padding:2px 8px;border-radius:2px;border:1px solid;white-space:nowrap;font-weight:400}
+  .b-hi{color:var(--rose);border-color:var(--rose);background:var(--rose-bg)}
+  .b-mid{color:var(--amber);border-color:var(--amber);background:var(--amber-bg)}
+  .b-lo{color:var(--sage);border-color:var(--sage);background:var(--sage-bg)}
+  .b-n{color:var(--ink-faint);border-color:var(--line-strong);background:var(--tint)}
+
+  /* callout */
+  .note{border:1px solid var(--line-strong);border-left:3px solid var(--ink-soft);border-radius:2px;padding:14px 18px;margin:20px 0;background:#fff;font-size:14.5px}
+  .note.warn{border-left-color:var(--rose)}
+  .note.ok{border-left-color:var(--sage)}
+  .note strong{font-weight:600}
+
+  /* stepper */
+  .steps{list-style:none;padding:0;margin:20px 0;counter-reset:s}
+  .steps li{
+    counter-increment:s;position:relative;padding:0 0 20px 42px;margin:0;
+    border-left:1px solid var(--line);
+  }
+  .steps li:last-child{border-left-color:transparent;padding-bottom:0}
+  .steps li::before{
+    content:counter(s);position:absolute;left:-13px;top:0;
+    width:25px;height:25px;border-radius:50%;background:var(--paper);
+    border:1px solid var(--line-strong);color:var(--ink-soft);
+    font-size:12px;display:flex;align-items:center;justify-content:center;
+  }
+  .steps b{font-weight:600}
+  .steps .d{color:var(--ink-soft);font-size:14px;display:block;margin-top:2px}
+  .k{color:var(--ink-faint);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="sub">2026-08-11 · sd</p>
+<h1>Loop AI Workflow</h1>
+<p class="lead">แผน + สถาปัตยกรรมของ loop ที่รันบน Claude Code <code>/loop</code> — ครอบคลุม 3 งาน: เฝ้าสถานะ, dev วนรอบ, สรุปประจำวัน</p>
+
+<div class="note warn">
+<strong>ข้อสรุปที่ต้องรู้ก่อนอย่างอื่น:</strong> <code>/loop</code> dynamic mode มี hard clamp ที่ <b>60–3600 วินาที</b> ต่อ 1 ช่วงพัก — แปลว่า <b>ทำ daily digest ด้วย /loop ตรง ๆ ไม่ได้</b> (ต้อง burn ทิ้ง 24 tick/วัน). งานรายวันต้องไปราง <code>/schedule</code> (cron) เท่านั้น. เลน C ในเอกสารนี้เลยออกแบบเป็น cron-triggered ไม่ใช่ loop.
+</div>
+
+<div class="toc">
+<h4>สารบัญ</h4>
+<ol>
+  <li><a href="#m">กลไกที่มีจริง — 4 ราง เลือกยังไง</a></li>
+  <li><a href="#k">Shared kernel — state contract + tick protocol</a></li>
+  <li><a href="#a">เลน A · Watcher loop (เฝ้าสถานะ/รอผล)</a></li>
+  <li><a href="#b">เลน B · Dev queue loop (งาน dev วนรอบ)</a></li>
+  <li><a href="#c">เลน C · Digest (สรุปประจำวัน)</a></li>
+  <li><a href="#s">Safety — tier gate ใน loop</a></li>
+  <li><a href="#f">Failure mode + วิธีกัน</a></li>
+  <li><a href="#t">ต้นทุน token</a></li>
+  <li><a href="#r">Rollout — ทำอะไรก่อนหลัง</a></li>
+</ol>
+</div>
+
+<h2 id="m">1 · กลไกที่มีจริง — 4 ราง</h2>
+<p>ทั้ง 4 รางนี้คนละกลไกกัน ไม่ใช่ของอย่างเดียวกันคนละชื่อ เลือกผิดรางแล้วทั้ง design พัง:</p>
+
+<div class="tw">
+<table>
+<tr>
+  <th>ราง</th><th>กลไก</th><th>ช่วงพักได้</th><th>Context</th><th>เหมาะกับ</th>
+</tr>
+<tr>
+  <td class="mono">/loop 5m &lt;cmd&gt;<br><span class="k">fixed</span></td>
+  <td>ตั้ง cron ภายใน ยิง prompt เดิมทุก N นาที</td>
+  <td>ตาม interval ที่ตั้ง</td>
+  <td>ต่อเนื่องในเซสชัน</td>
+  <td>งานที่จังหวะรู้ล่วงหน้าแน่ ๆ</td>
+</tr>
+<tr>
+  <td class="mono">/loop &lt;prompt&gt;<br><span class="k">dynamic</span></td>
+  <td>โมเดลเรียก <code>ScheduleWakeup</code> เองทุกเทิร์น เลือกเวลาตื่นเอง</td>
+  <td><b>60–3600s</b> (clamp)</td>
+  <td>ต่อเนื่องในเซสชัน</td>
+  <td><b>ค่าเริ่มต้นของทั้ง 3 งาน</b> — จังหวะปรับตามสถานการณ์</td>
+</tr>
+<tr>
+  <td class="mono">/schedule<br><span class="k">cron cloud</span></td>
+  <td>agent วิ่งบน cloud ตามตาราง ไม่ต้องเปิดเครื่องค้าง</td>
+  <td>อิสระ (รายวัน/สัปดาห์ได้)</td>
+  <td><b>เริ่มใหม่ทุกครั้ง</b> — ไม่มี memory ของรอบก่อน</td>
+  <td>daily digest, weekly curate</td>
+</tr>
+<tr>
+  <td class="mono">ralph-loop<br><span class="k">stop-hook</span></td>
+  <td>Stop hook บล็อกการจบเทิร์น แล้วป้อน prompt เดิมซ้ำทันที</td>
+  <td>ไม่พัก — ชนกันรัว</td>
+  <td>ต่อเนื่อง (บวมเร็วมาก)</td>
+  <td>grind งานเดียวจนเสร็จ ไม่ใช่ scheduling</td>
+</tr>
+</table>
+</div>
+
+<h4>ผลของการเลือก</h4>
+<ul>
+  <li><b>เลน A (watcher) + เลน B (dev queue)</b> → <code>/loop</code> dynamic. เหตุผล: จังหวะที่ควรตื่นขึ้นกับสถานะจริง (CI เพิ่งเริ่ม = พัก 8 นาที, CI ใกล้จบ = พัก 90 วิ) fixed interval จะได้ tick เปล่าเยอะโดยเปล่าประโยชน์</li>
+  <li><b>เลน C (digest)</b> → <code>/schedule</code>. เพราะเกิน clamp และไม่ต้องการ context ต่อเนื่องอยู่แล้ว — มัน re-read จากไฟล์เสมอ</li>
+  <li><b>ralph-loop ยังไม่ใช้</b> — มันไม่มี backoff, ไม่มี tier gate, และวนบน prompt เดิมที่ไม่เปลี่ยน. ต้นทุนสูงและคุมยาก. ถ้าอยากได้ dev grind ให้ใช้เลน B ที่มี queue คุมแทน</li>
+</ul>
+
+<div class="note">
+<strong>กฎเหล็กของ dynamic mode:</strong> ถ้าสั่งงาน background ไว้ (background Bash, Task) harness จะปลุกให้เองตอนงานจบ — <b>ห้ามตั้ง wakeup สั้นเพื่อ poll งานตัวเอง</b> นั่นคือ tick ทิ้งเปล่า. ตั้ง fallback ยาว (1200s+) ไว้กันงานค้างเงียบเท่านั้น. poll สั้นสงวนไว้ให้ของนอกระบบล้วน ๆ (CI, deploy, คิว remote)
+</div>
+
+<h2 id="k">2 · Shared kernel</h2>
+<p>ทุกเลนใช้ contract เดียวกัน จะได้ debug ที่เดียว เพิ่ม loop ใหม่แล้วไม่ต้องคิดใหม่</p>
+
+<h3>2.1 State อยู่บนดิสก์ ไม่ใช่ใน context</h3>
+<p>นี่คือ design decision ที่สำคัญที่สุดของเอกสารนี้. loop ที่ยาวพอจะโดน compaction เสมอ และ compaction กินรายละเอียดหาย — ถ้า state อยู่ในหัวอย่างเดียว loop จะเริ่มตัดสินใจจากความจำที่ถูกย่อแล้ว. <b>ทุก tick อ่านสถานะจากไฟล์ ไม่ใช่จากที่จำได้</b> context เป็นแค่ที่ทำงานชั่วคราว</p>
+
+<pre><code>~/.claude/loops/&lt;loop-name&gt;/
+├── state.json     # สถานะปัจจุบัน (ต้นทางความจริง)
+├── journal.md     # append-only: tick ไหน ทำอะไร ทำไม
+├── seen.json      # id ที่จัดการไปแล้ว — กันทำซ้ำ
+└── STOP           # ไฟล์ kill switch (มี = จบทันที)</code></pre>
+
+<pre><code>// state.json
+{
+  "loop": "acme-app-ci-watch",
+  "lane": "A",
+  "started_at": "2026-08-11T22:10:00+07:00",
+  "deadline_at": "2026-08-12T02:00:00+07:00",   // กันวนข้ามคืน
+  "tick": 7,
+  "max_ticks": 60,                               // budget แข็ง
+  "phase": "waiting_ci",                         // state machine
+  "target": { "repo": "acme/acme-app", "pr": 128 },
+  "last_observed": { "ci": "in_progress", "at": "2026-08-11T22:38:00+07:00" },
+  "consecutive_noop": 5,
+  "escalations": []                              // สิ่งที่รอต่องตัดสิน
+}</code></pre>
+
+<h3>2.2 Tick protocol — 6 ขั้น เหมือนกันทุกเลน</h3>
+<ol class="steps">
+  <li><b>Read</b><span class="d">อ่าน <code>state.json</code> + เช็ค <code>STOP</code>. มี STOP → <code>ScheduleWakeup(stop:true)</code> จบเลย ไม่ทำอะไรต่อ</span></li>
+  <li><b>Guard</b><span class="d">เกิน <code>max_ticks</code> หรือเลย <code>deadline_at</code> → เขียนสรุปลง journal แล้ว stop. กันวนไม่จบเป็นเงื่อนไขบังคับ ไม่ใช่ทางเลือก</span></li>
+  <li><b>Observe</b><span class="d">ดึงสถานะจริงด้วยคำสั่งที่<b>ถูกที่สุด</b> — <code>gh pr checks</code> บรรทัดเดียว ไม่ใช่อ่าน log ทั้งก้อน. observation ต้องเบา เพราะจะทำอีกหลายสิบครั้ง</span></li>
+  <li><b>Decide</b><span class="d">เทียบกับ <code>last_observed</code>: ไม่เปลี่ยน → ไม่ทำอะไร. เปลี่ยน → ทำ action ตาม state machine ของเลนนั้น พร้อมเช็ค <code>seen.json</code> กันทำซ้ำ</span></li>
+  <li><b>Persist</b><span class="d">เขียน <code>state.json</code> ทับ + append <code>journal.md</code> 1 บรรทัด <b>ก่อน</b> ตั้ง wakeup เสมอ — ถ้าเซสชันตายตรงนี้ รอบหน้ายังต่อได้</span></li>
+  <li><b>Schedule</b><span class="d"><code>ScheduleWakeup</code> พร้อม <code>noop</code> ตามจริง: ไม่มีอะไรเปลี่ยน = <code>noop:true</code> (จอต่องจะยุบบรรทัดพวกนี้ให้เอง), มี action = <code>noop:false</code></span></li>
+</ol>
+
+<h3>2.3 การเลือกช่วงพัก (backoff)</h3>
+<div class="tw">
+<table>
+<tr><th>สถานการณ์</th><th>delaySeconds</th><th>เหตุผล</th></tr>
+<tr><td>รอของนอกระบบที่รู้เวลาโดยประมาณ (CI ~8 นาที)</td><td class="mono">480</td><td>เช็ค 1 ครั้งตอนน่าจะเสร็จ ดีกว่าเช็ค 8 ครั้งทุกนาที</td></tr>
+<tr><td>เพิ่งเห็นสถานะขยับ กำลังจะถึงจุดตัด</td><td class="mono">60–180</td><td>ช่วงเดียวที่คุ้มจะถี่</td></tr>
+<tr><td>มี background task ทำงานอยู่ (harness ปลุกเอง)</td><td class="mono">1200–1800</td><td>เป็นแค่ fallback กันงานแฮงก์เงียบ</td></tr>
+<tr><td>noop ติดกัน ≥ 3 ครั้ง</td><td class="mono">× 2 จนชน 3600</td><td>exponential backoff — เงียบนานแปลว่าไม่ต้องขยัน</td></tr>
+<tr><td>ไม่มีสัญญาณอะไรให้ดูเป็นพิเศษ</td><td class="mono">1200–1800</td><td>ค่า default ที่ไม่เผา token</td></tr>
+</table>
+</div>
+
+<h2 id="a">3 · เลน A — Watcher loop</h2>
+<p class="sub">เฝ้าสถานะ / รอผล · <span class="b b-lo">L0 read-only</span></p>
+<p>เฝ้า CI, PR review, deploy, คิวงาน — งานที่ 90% ของ tick คือ "ยังไม่มีอะไร" เป้าหมายคือให้ tick เปล่าถูกที่สุดเท่าที่จะถูกได้ และ tick ที่มีของจริงต้องไม่พลาด</p>
+
+<h4>State machine</h4>
+<pre><code>idle → watching → changed → (report) → watching
+                     ↘ terminal(success|fail|timeout) → stop</code></pre>
+
+<div class="cards">
+<div class="card">
+  <span class="tag">Trigger</span>
+  <h4>สั่งด้วยมือตอนเปิดงาน</h4>
+  <p>เปิด PR เสร็จปุ๊บสั่ง loop เฝ้าต่อ ไม่ต้องนั่งเฝ้าเอง</p>
+</div>
+<div class="card">
+  <span class="tag">Action ที่ทำเองได้</span>
+  <h4>อ่าน + รายงาน เท่านั้น</h4>
+  <p>สรุป CI แดงว่าเทสไหนพัง ที่ไฟล์ไหน — แต่<b>ไม่แก้เอง</b> ในเลนนี้</p>
+</div>
+<div class="card">
+  <span class="tag">Exit</span>
+  <h4>terminal state หรือ deadline</h4>
+  <p>CI เขียว/แดงสรุปแล้ว, PR merged, หรือเลยเวลาที่ตั้งไว้</p>
+</div>
+</div>
+
+<h4>ตัวอย่างคำสั่ง</h4>
+<pre><code>/loop เฝ้า CI ของ PR acme/acme-app#128 — state ที่ ~/.claude/loops/acme-app-ci-watch/
+เช็คด้วย gh pr checks เท่านั้น, เขียน state+journal ทุก tick,
+เขียว = สรุปแล้ว stop, แดง = สรุปว่าเทสไหนพังที่ file:line แล้ว stop,
+deadline 02:00 หรือ 60 ticks</code></pre>
+
+<div class="note ok">
+<strong>ทำไมแยก watcher ออกจาก dev loop:</strong> watcher เป็น read-only ล้วน ปล่อยวิ่งข้ามคืนได้โดยไม่ต้องคิดเรื่องความเสี่ยง. พอไปรวมกับ "แก้เองเลย" เมื่อไร มันกลายเป็นเลน B ทันทีและต้องมี gate — แยกไว้จะได้ไม่เผลอให้สิทธิ์เกิน
+</div>
+
+<h2 id="b">4 · เลน B — Dev queue loop</h2>
+<p class="sub">งาน dev วนรอบ · <span class="b b-mid">L1–L2 เขียนโค้ดได้ มี gate</span> · <a href="dev-queue-loop.html">อ่านคอนเซปต์เต็ม →</a></p>
+<p>หลักการต่างจาก ralph โดยสิ้นเชิง: <b>ralph วน prompt เดิมจนกว่าจะพอใจ</b> (ไม่มีนิยามของเสร็จ) ส่วนเลนนี้ <b>วนบน queue ที่มีของนับได้</b> — 1 tick = 1 ใบงาน จบใบแล้วเปิด PR แล้วค่อยหยิบใบถัดไป. คิวหมด = จบ. เห็นความคืบหน้าเป็นตัวเลขตลอด</p>
+
+<pre><code>~/.claude/loops/&lt;name&gt;/queue.json
+[
+  {"id":"q1","title":"override transitive dep GHSA-r28c","tier":"L2","status":"todo"},
+  {"id":"q2","title":"เพิ่ม test coverage utils/date","tier":"L1","status":"todo"},
+  {"id":"q3","title":"rotate API key","tier":"L3","status":"blocked_needs_host"}
+]</code></pre>
+
+<h4>รอบการทำงาน 1 tick</h4>
+<ol class="steps">
+  <li><b>หยิบใบบนสุดที่ status=todo</b><span class="d">ทำทีละใบ ห้ามคาบสองใบ — คาบสองใบแล้ว diff ปนกัน rollback ไม่ได้</span></li>
+  <li><b>เช็ค tier ก่อนแตะโค้ด</b><span class="d">L3 → mark <code>blocked_needs_host</code> ใส่ <code>escalations</code> แล้วข้ามไปใบถัดไปทันที <b>ห้ามลงมือเอง</b></span></li>
+  <li><b>Branch + แก้ + targeted test</b><span class="d">git checkpoint ก่อนเสมอ, รัน lint/typecheck/unit เฉพาะที่แตะ</span></li>
+  <li><b>autoreview</b><span class="d">เทสแดงหรือ review เจอของ → <code>status=needs_attention</code> ไม่ push. อย่ากลบผลแดงเพื่อให้ loop เดินต่อสวย ๆ</span></li>
+  <li><b>push + PR เข้า dev</b><span class="d">main/prod ไม่แตะเด็ดขาด — PR ค้างไว้ให้ต่องกดเอง</span></li>
+  <li><b>อัปเดต queue แล้ว wakeup สั้น</b><span class="d">มีของค้าง = 60–120s (ไม่ได้รออะไร รีบทำใบต่อไป), คิวว่าง = stop พร้อมสรุป</span></li>
+</ol>
+
+<div class="note warn">
+<strong>เพดานของเลนนี้:</strong> ใบงานที่เข้าคิวได้ต้อง <b>ระบุชัดจนไม่ต้องตัดสินใจเชิงออกแบบ</b> ("bump dep + ให้ build ผ่าน", "เพิ่มเทสเคสนี้"). งานที่ต้องออกแบบ/เลือกทาง อย่าโยนเข้าคิว — loop จะเดาแล้วเดินหน้าไปไกลก่อนต่องจะได้ทักท้วง. คิวคือที่ของงาน mechanical ที่ design นิ่งแล้วเท่านั้น
+</div>
+
+<h2 id="c">5 · เลน C — Digest</h2>
+<p class="sub">สรุป/กลั่นข้อมูลประจำวัน · <span class="b b-lo">L0</span> · <b>ราง /schedule ไม่ใช่ /loop</b></p>
+<p>รายวันเกิน clamp 3600s ของ <code>/loop</code> อยู่แล้ว และงานนี้ไม่ต้องการ context ต่อเนื่อง — มันอ่านจากไฟล์/ระบบใหม่ทุกครั้ง. <code>/schedule</code> จึงตรงกว่า และได้ข้อดีเพิ่มคือไม่ต้องเปิดเซสชันค้างไว้</p>
+
+<div class="tw">
+<table>
+<tr><th>เวลา</th><th>งาน</th><th>Input</th><th>Output</th></tr>
+<tr>
+  <td class="mono">ทุกวัน 21:00</td>
+  <td>Daily digest</td>
+  <td>git log วันนี้ทุก repo ที่ทำงาน, PR ที่ขยับ, session capture ของวัน</td>
+  <td>append ลง Daily note ใน Obsidian + fleeting ถ้ามีของใหม่</td>
+</tr>
+<tr>
+  <td class="mono">ศุกร์ 17:00</td>
+  <td>Weekly curate <span class="b b-n">มีอยู่แล้ว</span></td>
+  <td>fleeting ที่สะสม</td>
+  <td>อัปเดต memory + proposal</td>
+</tr>
+</table>
+</div>
+
+<div class="note">
+<strong>บทเรียนจากของเดิม:</strong> cron ที่มีอยู่ (self-upgrade loop) เคยตายเงียบมาแล้ว — cron ไม่มีใครดูแลจะเงียบหายโดยไม่มีใครรู้. ทุก job ของเลนนี้ต้อง <b>เขียน heartbeat</b> ลง <code>~/.claude/loops/&lt;job&gt;/journal.md</code> ทุกรอบแม้ไม่มีอะไรทำ แล้ว watcher เบา ๆ (หรือ digest ตัวถัดไป) เช็คว่า heartbeat ล่าสุดเก่าเกิน 48 ชม.ไหม. <b>ไม่มีข่าว ≠ ข่าวดี</b>
+</div>
+
+<h2 id="s">6 · Safety — tier gate ใน loop</h2>
+<p>loop คือการให้สิทธิ์ลงมือโดยไม่มีคนดูอยู่ตรงนั้น เพดานสิทธิ์เลยต้องต่ำกว่าตอนคุยกันสด:</p>
+
+<div class="tw">
+<table>
+<tr><th>Tier</th><th>ในเซสชันปกติ</th><th>ใน loop (ไม่มีคนดู)</th></tr>
+<tr><td><span class="b b-lo">L0</span></td><td>ทำเลย</td><td>ทำเลย</td></tr>
+<tr><td><span class="b b-lo">L1</span></td><td>ทำเลย + targeted test</td><td>ทำได้ + ต้อง checkpoint ก่อนทุกครั้ง</td></tr>
+<tr><td><span class="b b-mid">L2</span></td><td>plan + reviewer</td><td>ถึง PR ได้ <b>ห้าม merge</b> — ค้างไว้ให้คนกด</td></tr>
+<tr><td><span class="b b-hi">L3</span></td><td>ยืนยันเป็นลายลักษณ์ + gate</td><td><b>ห้ามลงมือทุกกรณี</b> → เข้า <code>escalations</code> อย่างเดียว</td></tr>
+</table>
+</div>
+
+<ul>
+  <li><b>Classify ไม่ชัด = เด้งขึ้นเลนสูงกว่าเสมอ</b> — ใน loop โทษของการเดาผิดแพงกว่ามาก เพราะไม่มีใครทักระหว่างทาง</li>
+  <li><b>Kill switch ต้องใช้ได้โดยไม่ต้องคุยกับ agent</b> — <code>touch ~/.claude/loops/&lt;name&gt;/STOP</code> จบใน tick ถัดไปเสมอ ไม่ว่า loop กำลังคิดอะไรอยู่</li>
+  <li><b>Escalation ไม่ปลุกคน</b> — สะสมใน state แล้วรายงานทีเดียวตอน loop จบ ไม่ยิงเตือนกลางดึก</li>
+</ul>
+
+<h2 id="f">7 · Failure mode</h2>
+<div class="tw">
+<table>
+<tr><th>อาการ</th><th>ระดับ</th><th>เกิดเพราะ</th><th>กันยังไง</th></tr>
+<tr>
+  <td>Loop วนไม่จบ เผา token ทั้งคืน</td>
+  <td><span class="b b-hi">สูง</span></td>
+  <td>ไม่มีเงื่อนไขจบ หรือเงื่อนไขจบไม่มีวันเป็นจริง</td>
+  <td><code>max_ticks</code> + <code>deadline_at</code> เป็นฟิลด์บังคับใน state ตั้งแต่ tick แรก</td>
+</tr>
+<tr>
+  <td>ทำ side effect ซ้ำ (คอมเมนต์ PR ซ้ำ, ส่งซ้ำ)</td>
+  <td><span class="b b-hi">สูง</span></td>
+  <td>tick ใหม่ไม่รู้ว่า tick ก่อนทำไปแล้ว</td>
+  <td><code>seen.json</code> — เช็ค id ก่อนทำทุก external action</td>
+</tr>
+<tr>
+  <td>ตัดสินใจจากความจำที่โดนย่อ</td>
+  <td><span class="b b-hi">สูง</span></td>
+  <td>compaction กินรายละเอียดกลาง loop</td>
+  <td>อ่าน state จากไฟล์ทุก tick ห้ามเชื่อสิ่งที่ "จำได้"</td>
+</tr>
+<tr>
+  <td>Loop ตายเงียบ ไม่มีใครรู้</td>
+  <td><span class="b b-mid">กลาง</span></td>
+  <td>เซสชันปิด / เครื่อง sleep / cron พัง</td>
+  <td>heartbeat ลง journal ทุก tick + เช็คอายุ heartbeat</td>
+</tr>
+<tr>
+  <td>Poll ถี่เกินจนเปลืองเปล่า</td>
+  <td><span class="b b-mid">กลาง</span></td>
+  <td>ตั้ง wakeup สั้นเพื่อรองาน background ของตัวเอง</td>
+  <td>งาน background = harness ปลุกเอง ตั้ง fallback 1200s+ พอ</td>
+</tr>
+<tr>
+  <td>เทสแดงแต่ loop เดินต่อ</td>
+  <td><span class="b b-mid">กลาง</span></td>
+  <td>อยากให้คิวเดินหน้า เลยข้ามผลแดง</td>
+  <td>แดง = <code>needs_attention</code> หยุดใบนั้น รายงานตามจริง ไม่ push</td>
+</tr>
+<tr>
+  <td>State ไฟล์พัง / เขียนไม่ครบ</td>
+  <td><span class="b b-lo">ต่ำ</span></td>
+  <td>ตายกลางคันตอนเขียน</td>
+  <td>เขียน state ก่อนตั้ง wakeup เสมอ + journal เป็น append-only ไว้ไล่ย้อน</td>
+</tr>
+</table>
+</div>
+
+<h2 id="t">8 · ต้นทุน token</h2>
+<p>ค่าใช้จ่ายจริงของ loop = <b>จำนวน tick × ราคาต่อ tick</b> ลดได้ทั้งสองทาง:</p>
+<ul>
+  <li><b>ลดจำนวน tick</b> — backoff แบบ exponential ตอนเงียบ, ตั้ง deadline ให้ตรงความจริง, อย่า poll สิ่งที่ harness ปลุกให้อยู่แล้ว</li>
+  <li><b>ลดราคาต่อ tick</b> — tick เปล่าควรเป็น "อ่าน state + คำสั่งเช็ค 1 บรรทัด + เขียน 1 บรรทัด" จบ. ห้าม tick เปล่าไปไล่อ่านไฟล์โปรเจกต์</li>
+  <li><b>Tier ลงเฉพาะงานกลไก</b> — observe/collect ใน watcher เป็นงาน mechanical, ส่วน decide/review คงระดับเต็ม. ลังเลแม้นิดเดียว = ไม่ tier ลง</li>
+  <li><b>ประหยัดที่ได้เปล่า:</b> เซสชันนี้ prompt cache TTL 1 ชม. ซึ่งครอบคลุมทุกช่วงพักที่ตั้งได้อยู่แล้ว — <b>ไม่ต้องตั้ง wakeup ถี่เพื่อ "keep cache warm"</b> นั่นคือจ่ายเพิ่มเพื่อของฟรี</li>
+</ul>
+
+<h2 id="r">9 · Rollout</h2>
+<ol class="steps">
+  <li><b>Phase 1 — เลน A ตัวเดียว</b> <span class="b b-lo">เริ่มที่นี่</span>
+    <span class="d">ทำ watcher เฝ้า CI ของ PR จริง 1 ตัว. ได้ของใช้จริงทันที และเป็นที่ทดสอบ kernel (state/journal/backoff/STOP) แบบไม่มีความเสี่ยงเพราะ read-only ล้วน. วัดผล: tick ทั้งหมดกี่ครั้ง, tick เปล่ากี่ครั้ง, พลาดจังหวะไหม</span></li>
+  <li><b>Phase 2 — เลน C ต่อยอด cron เดิม</b>
+    <span class="d">เพิ่ม daily digest 21:00 เข้าราง <code>/schedule</code> ที่มี weekly curate อยู่แล้ว + ใส่ heartbeat ให้ job เดิมด้วย (แก้จุดที่เคยตายเงียบไปในตัว). ยัง L0 อยู่</span></li>
+  <li><b>Phase 3 — เลน B</b>
+    <span class="d">ต่อเมื่อ kernel พิสูจน์แล้วจาก 2 phase แรก. เริ่มด้วยคิว L1 ล้วน 2–3 ใบ ให้จบที่ PR แล้วดูคุณภาพ diff ก่อนขยาย</span></li>
+  <li><b>Phase 4 — ทำเป็น skill</b>
+    <span class="d">พอ pattern นิ่ง ค่อยห่อเป็น skill <code>/loop-watch</code>, <code>/loop-queue</code> จะได้ไม่ต้องพิมพ์ prompt ยาวทุกครั้ง — <b>ตอนนี้ยังไม่ทำ</b> ห่อ pattern ที่ยังไม่นิ่งคือ premature abstraction</span></li>
+</ol>
+
+<hr>
+<p class="sub">ที่มา: <code>ScheduleWakeup</code> tool contract (clamp 60–3600s, noop, stop, cache TTL), skill description ของ <code>/loop</code> และ <code>/schedule</code>, README ของ plugin <code>ralph-loop</code> ในเครื่อง</p>
+
+</div>
+</body>
+</html>

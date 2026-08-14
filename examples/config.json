@@ -1,0 +1,15 @@
+{
+  "project": "acme-app",
+  "repo_path": "/Users/alice/src/acme-app",
+  "base": "dev",
+  "runner": {"adapter": "builtin", "provider": "codex"},
+  "linear": {
+    "workspace": "Acme",
+    "workspace_id": "00000000-0000-4000-8000-000000000001",
+    "team": "ENG",
+    "team_id": "00000000-0000-4000-8000-000000000002",
+    "sync_interval_sec": 300,
+    "ready_label": "loop:ready",
+    "needs_attention_label": "loop:needs-attention"
+  }
+}

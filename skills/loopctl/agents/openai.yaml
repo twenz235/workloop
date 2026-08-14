@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operate loopctl"
+  short_description: "Inspect and operate the local loop workflow safely"
+  default_prompt: "Use $loopctl to inspect and operate this project workflow."
