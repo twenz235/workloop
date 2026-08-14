@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	loopglob "github.com/twenz235/workloop/internal/glob"
 )
 
 type groomPlanInput struct {
@@ -45,7 +47,7 @@ func (s *State) GroomPlanCreate(ctx context.Context, data []byte, approvedBy str
 		return nil, err
 	}
 
-	waves := planExecutionWaves(order, cards)
+	waves := planExecutionWaves(order, cards, s.Config.HotPaths)
 	if parentResult == nil {
 		parentResult, err = s.createPlanParent(ctx, planID, parent, order, cards)
 		if err != nil {
@@ -428,21 +430,37 @@ func integerValue(value any) (int, bool) {
 	return 0, false
 }
 
-func planExecutionWaves(order []string, cards map[string]map[string]any) [][]string {
+func planExecutionWaves(order []string, cards map[string]map[string]any, hotPaths []string) [][]string {
 	level := map[string]int{}
 	waves := [][]string{}
 	for _, key := range order {
-		cardLevel := 0
+		minimumLevel := 0
 		for _, dependency := range stringSlice(cards[key]["depends_on_keys"]) {
-			if level[dependency]+1 > cardLevel {
-				cardLevel = level[dependency] + 1
+			if level[dependency]+1 > minimumLevel {
+				minimumLevel = level[dependency] + 1
 			}
 		}
-		level[key] = cardLevel
-		for len(waves) <= cardLevel {
-			waves = append(waves, []string{})
+		touches := stringSlice(cards[key]["touches"])
+		hot := loopglob.PatternsOverlap(touches, hotPaths)
+		for cardLevel := minimumLevel; ; cardLevel++ {
+			for len(waves) <= cardLevel {
+				waves = append(waves, []string{})
+			}
+			compatible := true
+			for _, otherKey := range waves[cardLevel] {
+				otherTouches := stringSlice(cards[otherKey]["touches"])
+				if hot || loopglob.PatternsOverlap(otherTouches, hotPaths) || loopglob.PatternsOverlap(touches, otherTouches) {
+					compatible = false
+					break
+				}
+			}
+			if !compatible {
+				continue
+			}
+			level[key] = cardLevel
+			waves[cardLevel] = append(waves[cardLevel], key)
+			break
 		}
-		waves[cardLevel] = append(waves[cardLevel], key)
 	}
 	return waves
 }

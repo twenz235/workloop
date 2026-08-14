@@ -25,6 +25,9 @@ Do not split only by file or technical layer when that would create unusable fra
 - Use short unique lowercase keys matching `[a-z0-9][a-z0-9-]{0,31}`.
 - Express internal dependencies with `depends_on_keys`. Keep existing external Linear UUID dependencies in `depends_on`.
 - Reject unknown keys, self-dependencies, and cycles. Show topological execution waves in the preview.
+- Optimize for safe parallel work: add a dependency only when one card consumes an artifact, contract, or state produced by another. Shared context or belonging to the same feature is not a dependency.
+- Keep `touches` precise enough to expose independent work, but conservative enough to include every likely edited file. Cards whose patterns overlap must be placed in different execution waves even when they have no dependency.
+- Any card touching a configured hot path is exclusive and occupies its own execution wave.
 - Avoid a final vague “integrate everything” card. Add one only when it has observable behavior and distinct verification.
 
 ## Plan JSON

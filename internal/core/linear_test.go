@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	loopglob "github.com/twenz235/workloop/internal/glob"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -362,6 +364,36 @@ func TestGroomPlanCreatesParentAndOrderedSubIssues(t *testing.T) {
 	schemaID := fmt.Sprint(creates[1]["id"])
 	if !strings.Contains(fmt.Sprint(creates[2]["description"]), schemaID) || !strings.Contains(fmt.Sprint(creates[2]["labelIds"]), "ready-id") {
 		t.Fatalf("dependent card is incomplete: %v", creates[2])
+	}
+}
+
+func TestPlanExecutionWavesOnlyGroupConflictFreeCards(t *testing.T) {
+	cards := map[string]map[string]any{
+		"api-a":    {"touches": []string{"apps/api/a.go"}, "depends_on_keys": []string{}},
+		"api-b":    {"touches": []string{"apps/api/a.go"}, "depends_on_keys": []string{}},
+		"web":      {"touches": []string{"apps/web/page.tsx"}, "depends_on_keys": []string{}},
+		"hot":      {"touches": []string{"package.json"}, "depends_on_keys": []string{}},
+		"api-test": {"touches": []string{"apps/api/a_test.go"}, "depends_on_keys": []string{"api-a"}},
+	}
+	waves := planExecutionWaves(
+		[]string{"api-a", "api-b", "web", "hot", "api-test"},
+		cards,
+		[]string{"package.json", "pnpm-lock.yaml"},
+	)
+	if got := fmt.Sprint(waves); got != "[[api-a web] [api-b api-test] [hot]]" {
+		t.Fatalf("waves=%s", got)
+	}
+	for _, wave := range waves {
+		for i, left := range wave {
+			leftTouches := stringSlice(cards[left]["touches"])
+			leftHot := loopglob.PatternsOverlap(leftTouches, []string{"package.json", "pnpm-lock.yaml"})
+			for _, right := range wave[i+1:] {
+				rightTouches := stringSlice(cards[right]["touches"])
+				if leftHot || loopglob.PatternsOverlap(rightTouches, []string{"package.json", "pnpm-lock.yaml"}) || loopglob.PatternsOverlap(leftTouches, rightTouches) {
+					t.Fatalf("conflicting cards share wave: %s and %s", left, right)
+				}
+			}
+		}
 	}
 }
 
