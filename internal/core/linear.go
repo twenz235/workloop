@@ -366,6 +366,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, E(8, "Linear sync failed: %v", err)
 	}
+	issues = orderLinearIssuesByDependencies(issues)
 	imported := []string{}
 	updated := []string{}
 	attention := []string{}
@@ -666,7 +667,7 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 	if opID == "" {
 		opID = deterministicUUID(append(append([]byte(nil), data...), []byte("|"+approvedBy)...))
 	}
-	if !regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`).MatchString(opID) {
+	if !uuidPattern.MatchString(opID) {
 		return nil, E(2, "operation_id must be a UUID")
 	}
 	delete(raw, "operation_id")
@@ -693,6 +694,7 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 	if projectID == "" || projectName == "" {
 		return nil, E(2, "linear_project_id and linear_project are required")
 	}
+	parentID, _ := raw["linear_parent_id"].(string)
 	b, _ := json.Marshal(raw)
 	if _, _, err := DecodeCard(b, &s.Config); err != nil {
 		return nil, err
@@ -711,10 +713,17 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 	problem, _ := raw["problem"].(string)
 	outcome, _ := raw["desired_outcome"].(string)
 	acceptance, _ := raw["acceptance"].([]any)
-	description := fmt.Sprintf("## Problem\n%s\n\n## Desired outcome\n%s\n\n## Acceptance criteria\n%s%s\n\n```loop-card\n%s\n```", problem, outcome, markdownChecklist(acceptance), markdownVisuals(raw["visuals"]), cardBlock)
+	description := fmt.Sprintf("## Problem\n%s\n\n## Desired outcome\n%s\n\n## Acceptance criteria\n%s%s\n\n```loop-card\n%s\n```", safeHumanMarkdown(problem), safeHumanMarkdown(outcome), markdownChecklist(acceptance), markdownVisuals(raw["visuals"]), cardBlock)
 	client, err := s.linearClient()
 	if err != nil {
 		return nil, err
+	}
+	if parentID != "" {
+		if _, ok, err := client.findIssue(ctx, parentID); err != nil {
+			return nil, E(8, "Linear parent lookup failed: %v", err)
+		} else if !ok {
+			return nil, E(2, "Linear parent %s does not exist", parentID)
+		}
 	}
 	if existing, ok, e := client.findIssue(ctx, opID); e == nil && ok {
 		existing["labels"] = []string{s.Config.Linear.ReadyLabel, "type:" + workType}
@@ -757,6 +766,9 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 		}
 	}
 	input := map[string]any{"id": opID, "teamId": s.Config.Linear.TeamID, "title": title, "description": description, "stateId": backlogID, "labelIds": []string{readyLabelID, typeLabelID}, "projectId": projectID, "priority": int(priority)}
+	if parentID != "" {
+		input["parentId"] = parentID
+	}
 	if err := client.graphql(ctx, q, map[string]any{"input": input}, &response); err != nil {
 		if existing, ok, _ := client.findIssue(ctx, opID); ok {
 			existing["labels"] = []string{s.Config.Linear.ReadyLabel, "type:" + workType}
@@ -774,7 +786,7 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 func markdownChecklist(values []any) string {
 	lines := make([]string, 0, len(values))
 	for _, value := range values {
-		item := strings.Join(strings.Fields(fmt.Sprint(value)), " ")
+		item := safeHumanMarkdown(strings.Join(strings.Fields(fmt.Sprint(value)), " "))
 		lines = append(lines, "- [ ] "+item)
 	}
 	return strings.Join(lines, "\n")
@@ -791,13 +803,17 @@ func markdownVisuals(value any) string {
 		if !ok {
 			continue
 		}
-		alt := strings.Join(strings.Fields(fmt.Sprint(visual["alt"])), " ")
+		alt := safeHumanMarkdown(strings.Join(strings.Fields(fmt.Sprint(visual["alt"])), " "))
 		url := strings.TrimSpace(fmt.Sprint(visual["url"]))
-		description := strings.Join(strings.Fields(fmt.Sprint(visual["description"])), " ")
+		description := safeHumanMarkdown(strings.Join(strings.Fields(fmt.Sprint(visual["description"])), " "))
 		alt = strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(alt)
 		lines = append(lines, fmt.Sprintf("![%s](<%s>)", alt, url), "", description)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func safeHumanMarkdown(value string) string {
+	return strings.ReplaceAll(value, "```loop-card", "``` loop-card")
 }
 
 type LinearProjectOption struct {

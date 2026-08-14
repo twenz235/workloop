@@ -120,6 +120,7 @@ type Card struct {
 	WorkType        string          `json:"work_type,omitempty"`
 	LinearProjectID string          `json:"linear_project_id,omitempty"`
 	LinearProject   string          `json:"linear_project,omitempty"`
+	LinearParentID  string          `json:"linear_parent_id,omitempty"`
 	Visuals         []Visual        `json:"visuals,omitempty"`
 	Risk            json.RawMessage `json:"risk"`
 	RollbackNotes   string          `json:"rollback_notes"`
@@ -248,10 +249,12 @@ func ValidateCard(c *Card, cfg *Config) error {
 			return E(2, "linear_project_id and linear_project are required")
 		}
 	}
+	if c.LinearParentID != "" && !uuidPattern.MatchString(c.LinearParentID) {
+		return E(2, "linear_parent_id must be a UUID")
+	}
 	for _, visual := range c.Visuals {
-		parsed, err := url.ParseRequestURI(visual.URL)
-		if strings.TrimSpace(visual.Alt) == "" || strings.TrimSpace(visual.Description) == "" || err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || strings.ContainsAny(visual.URL, "\r\n<>") {
-			return E(2, "each visual requires alt, description and an https URL")
+		if err := validateVisual(visual); err != nil {
+			return err
 		}
 	}
 	if cfg != nil && (c.Repo != cfg.Repo || filepath.Clean(c.RepoPath) != cfg.RepoPath || c.Base != cfg.Base) {
@@ -262,6 +265,14 @@ func ValidateCard(c *Card, cfg *Config) error {
 	}
 	if c.MaxRework == 0 {
 		c.MaxRework = 2
+	}
+	return nil
+}
+
+func validateVisual(visual Visual) error {
+	parsed, err := url.ParseRequestURI(visual.URL)
+	if strings.TrimSpace(visual.Alt) == "" || strings.TrimSpace(visual.Description) == "" || err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || strings.ContainsAny(visual.URL, "\r\n<>") {
+		return E(2, "each visual requires alt, description and an https URL")
 	}
 	return nil
 }

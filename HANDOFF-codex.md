@@ -562,7 +562,9 @@ Linear status mapping ตายตัวตาม category/name ที่ resolv
 
 `/groom` ทำงานเป็นสอง phase:
 1. **Draft:** รับโจทย์, อ่าน docs/source แบบ read-only, ถามเฉพาะ ambiguity, ประเมิน risk/size, แตกการ์ด และสร้าง preview. ยังไม่สร้าง external change เว้นแต่ผู้ใช้ขอ save draft
-2. **Approve:** เมื่อผู้ใช้ยืนยัน explicit จึง create/update Linear issue, เชื่อม parent/dependency, ใส่ `loop-card` และ `loop:ready`; คืน URL ทุกใบและลำดับ execution
+2. **Approve:** เมื่อผู้ใช้ยืนยัน explicit จึง create/update Linear issues, เชื่อม parent/dependency, ใส่ `loop-card` และ `loop:ready` เฉพาะใบ executable; คืน URL ทุกใบและลำดับ execution
+
+ถ้างานใหญ่ `/groom` ต้องสร้าง plan เดียวที่มี parent ไม่เข้า execution และ sub-issues 2–20 ใบที่ผ่าน DoR แยกกัน. ใช้ `loopctl groom --plan-file <plan.json> --approved-by <id>`; CLI validate graph ทั้งก้อนก่อน write, สร้าง parent ก่อน, สร้าง sub-issues ตาม topological order, resolve `depends_on_keys` เป็น Linear UUID และใช้ deterministic operation IDs เพื่อ resume หลัง partial failure โดยไม่สร้างซ้ำ. ห้ามผลักภาระการแตกงานให้ผู้ใช้เมื่อระบบอนุมานขอบเขตได้เอง
 
 ต้องรองรับผลลัพธ์สามแบบ:
 - `ready`: ผ่าน DoR และผู้ใช้ยืนยัน → Backlog + `loop:ready`

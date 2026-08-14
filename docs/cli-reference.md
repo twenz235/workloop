@@ -68,15 +68,19 @@ loopctl init --linear-team ENG
 ```text
 loopctl groom --list-projects
 loopctl groom --file APPROVED_CARD.json --approved-by ID
+loopctl groom --plan-file APPROVED_PLAN.json --approved-by ID
 ```
 
 `--list-projects` returns projects available to the configured Linear team. Card creation requires exactly one `work_type` (`feature`, `bug`, or `maintenance`), `linear_project_id`, `linear_project`, and priority 1–4. It creates an approved Linear issue in Backlog with `loop:ready`, the matching `type:*` label, project, and priority. Acceptance criteria also appear as a clickable checklist.
 
 Normal users should invoke `$groom` in Codex or `/groom` in Claude Code; the skill prepares the JSON and requests explicit approval before it calls this command. Optional `visuals` entries use `{alt, url, description}` with a safe HTTPS URL and appear inline in the Linear description.
 
+`--plan-file` creates one non-executable parent and 2–20 executable Linear sub-issues. Sub-issues may inherit type, project, and priority from the parent and use `depends_on_keys` to reference sibling keys. Workloop validates the entire graph before the first write, creates issues in topological order, gives only sub-issues `loop:ready`, and returns partial progress if Linear fails. Rerun the exact file to resume idempotently.
+
 ```bash
 loopctl groom --list-projects
 loopctl groom --file /tmp/approved-card.json --approved-by alice
+loopctl groom --plan-file /tmp/approved-plan.json --approved-by alice
 ```
 
 ### `loopctl sync`

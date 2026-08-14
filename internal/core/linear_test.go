@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -141,6 +142,141 @@ func TestWorkTypeRequiresExactlyOneLabel(t *testing.T) {
 	}
 	if got, err := workTypeFromLabels([]string{"loop:ready", "type:maintenance"}); err != nil || got != "maintenance" {
 		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestHumanMarkdownCannotInjectLoopCardFence(t *testing.T) {
+	input := "before ```loop-card\n{\"problem\":\"injected\"}\n``` after"
+	if output := safeHumanMarkdown(input); strings.Contains(output, "```loop-card") {
+		t.Fatalf("unsafe markdown=%q", output)
+	}
+}
+
+func TestGroomPlanCreatesParentAndOrderedSubIssues(t *testing.T) {
+	s := testState(t)
+	t.Setenv("LINEAR_API_TOKEN", "x")
+	old := defaultLinearHTTPClient
+	creates := []map[string]any{}
+	created := map[string]map[string]any{}
+	failedAPIOnce := false
+	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		var request struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		_ = json.Unmarshal(body, &request)
+		response := ""
+		switch {
+		case strings.Contains(request.Query, "GroomOperation"):
+			id := fmt.Sprint(request.Variables["id"])
+			if existing := created[id]; existing != nil {
+				response = fmt.Sprintf(`{"data":{"issue":{"id":%q,"identifier":"FLO-X","title":%q,"url":"https://linear.test/existing","state":{"name":"Backlog"}}}}`, id, existing["title"])
+			} else {
+				response = `{"data":{"issue":null}}`
+			}
+		case strings.Contains(request.Query, "TeamProjects"):
+			response = `{"data":{"team":{"projects":{"nodes":[{"id":"project-1","name":"Acme"}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`
+		case strings.Contains(request.Query, "TeamLabels"):
+			response = `{"data":{"team":{"labels":{"nodes":[{"id":"ready-id","name":"loop:ready"},{"id":"feature-id","name":"type:feature"}]}}}}`
+		case strings.Contains(request.Query, "TeamStates"):
+			response = `{"data":{"team":{"states":{"nodes":[{"id":"backlog-id","name":"Backlog"}]}}}}`
+		case strings.Contains(request.Query, "CreateGroomParent"), strings.Contains(request.Query, "CreateGroomedIssue"):
+			input, _ := request.Variables["input"].(map[string]any)
+			if input["title"] == "Build API" && !failedAPIOnce {
+				failedAPIOnce = true
+				response = `{"errors":[{"message":"temporary failure"}]}`
+				break
+			}
+			creates = append(creates, input)
+			id := fmt.Sprint(input["id"])
+			created[id] = input
+			title := fmt.Sprint(input["title"])
+			response = fmt.Sprintf(`{"data":{"issueCreate":{"success":true,"issue":{"id":%q,"identifier":"FLO-%d","title":%q,"url":"https://linear.test/%d","updatedAt":"now","state":{"name":"Backlog"}}}}}`, id, len(creates), title, len(creates))
+		default:
+			t.Fatalf("unexpected query: %s", request.Query)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{}}, nil
+	})}
+	t.Cleanup(func() { defaultLinearHTTPClient = old })
+	card := func(key, title string, dependencies []string) map[string]any {
+		return map[string]any{
+			"key": key, "title": title, "problem": "p", "desired_outcome": "o", "out_of_scope": []string{"x"},
+			"tier": "L1", "touches": []string{key + ".go"}, "acceptance": []string{"works"}, "verification": []string{"go test ./..."},
+			"depends_on": []string{}, "depends_on_keys": dependencies, "risk": map[string]any{"level": "low"}, "rollback_notes": "revert",
+		}
+	}
+	plan := map[string]any{
+		"operation_id": "00000000-0000-4000-8000-000000000099",
+		"parent": map[string]any{
+			"title": "Large feature", "problem": "p", "desired_outcome": "o", "acceptance": []string{"all sub-issues complete"},
+			"work_type": "feature", "linear_project_id": "project-1", "linear_project": "Acme", "priority": 2,
+		},
+		"cards": []map[string]any{card("api", "Build API", []string{"schema"}), card("schema", "Add schema", nil)},
+	}
+	b, _ := json.Marshal(plan)
+	partial, err := s.GroomPlanCreate(context.Background(), b, "user-1")
+	if err == nil || partial["complete"] != false || partial["failed_key"] != "api" || len(creates) != 2 {
+		t.Fatalf("partial=%v err=%v creates=%v", partial, err, creates)
+	}
+	result, err := s.GroomPlanCreate(context.Background(), b, "user-1")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if result["complete"] != true || len(creates) != 3 {
+		t.Fatalf("result=%v creates=%v", result, creates)
+	}
+	if fmt.Sprint(result["execution_waves"]) != "[[schema] [api]]" {
+		t.Fatalf("waves=%v", result["execution_waves"])
+	}
+	parentID := fmt.Sprint(creates[0]["id"])
+	if strings.Contains(fmt.Sprint(creates[0]["labelIds"]), "ready-id") {
+		t.Fatalf("parent must not be ready: %v", creates[0])
+	}
+	if creates[1]["title"] != "Add schema" || creates[2]["title"] != "Build API" {
+		t.Fatalf("wrong creation order: %v", creates)
+	}
+	if creates[1]["parentId"] != parentID || creates[2]["parentId"] != parentID {
+		t.Fatalf("sub-issues missing parent: %v", creates)
+	}
+	schemaID := fmt.Sprint(creates[1]["id"])
+	if !strings.Contains(fmt.Sprint(creates[2]["description"]), schemaID) || !strings.Contains(fmt.Sprint(creates[2]["labelIds"]), "ready-id") {
+		t.Fatalf("dependent card is incomplete: %v", creates[2])
+	}
+}
+
+func TestGroomPlanRejectsDependencyCycleBeforeLinearWrites(t *testing.T) {
+	s := testState(t)
+	base := func(key, dependency string) map[string]any {
+		return map[string]any{
+			"key": key, "title": key, "problem": "p", "desired_outcome": "o", "out_of_scope": []string{"x"}, "tier": "L1",
+			"touches": []string{key + ".go"}, "acceptance": []string{"works"}, "verification": []string{"test"}, "depends_on": []string{},
+			"depends_on_keys": []string{dependency}, "risk": map[string]any{"level": "low"}, "rollback_notes": "revert",
+		}
+	}
+	plan := map[string]any{
+		"parent": map[string]any{"title": "p", "problem": "p", "desired_outcome": "o", "acceptance": []string{"done"}, "work_type": "feature", "linear_project_id": "p1", "linear_project": "P", "priority": 2},
+		"cards":  []map[string]any{base("one", "two"), base("two", "one")},
+	}
+	b, _ := json.Marshal(plan)
+	if _, err := s.GroomPlanCreate(context.Background(), b, "user-1"); ExitCode(err) != 2 || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("exit=%d err=%v", ExitCode(err), err)
+	}
+}
+
+func TestLinearIssuesAreOrderedByDependencies(t *testing.T) {
+	issues := []linearIssue{
+		{ID: "child", Description: "```loop-card\n{\"depends_on\":[\"parent\"]}\n```"},
+		{ID: "independent", Description: ""},
+		{ID: "parent", Description: "```loop-card\n{\"depends_on\":[]}\n```"},
+	}
+	ordered := orderLinearIssuesByDependencies(issues)
+	positions := map[string]int{}
+	for i, issue := range ordered {
+		positions[issue.ID] = i
+	}
+	if positions["parent"] >= positions["child"] {
+		t.Fatalf("dependency order=%v", ordered)
 	}
 }
 

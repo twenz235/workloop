@@ -569,17 +569,35 @@ func markStaleCmd(s *core.State, args []string) error {
 func groomCmd(s *core.State, args []string) error {
 	fs := flag.NewFlagSet("groom", flag.ContinueOnError)
 	file := fs.String("file", "", "approved card JSON")
+	planFile := fs.String("plan-file", "", "approved parent and sub-issue plan JSON")
 	by := fs.String("approved-by", "", "approver identity")
 	listProjects := fs.Bool("list-projects", false, "list available Linear projects")
 	if err := fs.Parse(args); err != nil {
 		return core.E(2, "%v", err)
 	}
 	if *listProjects {
-		if *file != "" || *by != "" {
+		if *file != "" || *planFile != "" || *by != "" {
 			return core.E(2, "--list-projects cannot be combined with card creation")
 		}
 		v, err := s.LinearProjects(context.Background())
 		if err != nil {
+			return err
+		}
+		return output(v)
+	}
+	if *file != "" && *planFile != "" {
+		return core.E(2, "--file and --plan-file are mutually exclusive")
+	}
+	if *planFile != "" {
+		b, err := os.ReadFile(*planFile)
+		if err != nil {
+			return err
+		}
+		v, err := s.GroomPlanCreate(context.Background(), b, *by)
+		if err != nil {
+			if v != nil {
+				_ = output(v)
+			}
 			return err
 		}
 		return output(v)
