@@ -30,7 +30,13 @@ type linearIssue struct {
 	ID, Identifier, Title, Description, URL, UpdatedAt, StateName string
 	Labels                                                        []string
 	Priority                                                      int
-	ProjectID, ProjectName                                        string
+	ProjectID, ProjectName, ParentID                              string
+}
+
+type reusableLinearParent struct {
+	ID, Identifier, Title, URL, ArchivedAt, StateName string
+	TeamID, ProjectID                                 string
+	Labels                                            []string
 }
 
 func (s *State) linearClient() (*linearClient, error) {
@@ -100,7 +106,7 @@ func (c *linearClient) graphql(ctx context.Context, query string, variables any,
 }
 
 func (c *linearClient) issues(ctx context.Context, teamID string) ([]linearIssue, error) {
-	const q = `query LoopIssues($team: String!, $after: String) { team(id: $team) { issues(first: 100, after: $after, includeArchived: true) { nodes { id identifier title description url updatedAt priority state { name } project { id name } labels { nodes { name } } } pageInfo { hasNextPage endCursor } } } }`
+	const q = `query LoopIssues($team: String!, $after: String) { team(id: $team) { issues(first: 100, after: $after, includeArchived: true) { nodes { id identifier title description url updatedAt priority state { name } project { id name } parent { id } labels { nodes { name } } } pageInfo { hasNextPage endCursor } } } }`
 	out := []linearIssue{}
 	var after any = nil
 	for {
@@ -112,6 +118,7 @@ func (c *linearClient) issues(ctx context.Context, teamID string) ([]linearIssue
 						Priority                                           int
 						State                                              struct{ Name string }
 						Project                                            struct{ ID, Name string }
+						Parent                                             struct{ ID string }
 						Labels                                             struct{ Nodes []struct{ Name string } }
 					}
 					PageInfo struct {
@@ -125,7 +132,7 @@ func (c *linearClient) issues(ctx context.Context, teamID string) ([]linearIssue
 			return nil, err
 		}
 		for _, n := range data.Team.Issues.Nodes {
-			v := linearIssue{ID: n.ID, Identifier: n.Identifier, Title: n.Title, Description: n.Description, URL: n.URL, UpdatedAt: n.UpdatedAt, Priority: n.Priority, StateName: n.State.Name, ProjectID: n.Project.ID, ProjectName: n.Project.Name}
+			v := linearIssue{ID: n.ID, Identifier: n.Identifier, Title: n.Title, Description: n.Description, URL: n.URL, UpdatedAt: n.UpdatedAt, Priority: n.Priority, StateName: n.State.Name, ProjectID: n.Project.ID, ProjectName: n.Project.Name, ParentID: n.Parent.ID}
 			for _, l := range n.Labels.Nodes {
 				v.Labels = append(v.Labels, l.Name)
 			}
@@ -193,6 +200,30 @@ func (c *linearClient) findIssue(ctx context.Context, id string) (map[string]any
 	return map[string]any{"id": data.Issue.ID, "identifier": data.Issue.Identifier, "title": data.Issue.Title, "url": data.Issue.URL, "status": data.Issue.State.Name}, true, nil
 }
 
+func (c *linearClient) reusableParent(ctx context.Context, id string) (reusableLinearParent, bool, error) {
+	const q = `query ReusableGroomParent($id: String!) { issue(id: $id) { id identifier title url archivedAt state { name } team { id } project { id } labels { nodes { name } } } }`
+	var data struct {
+		Issue *struct {
+			ID, Identifier, Title, URL, ArchivedAt string
+			State                                  struct{ Name string }
+			Team                                   struct{ ID string }
+			Project                                struct{ ID string }
+			Labels                                 struct{ Nodes []struct{ Name string } }
+		}
+	}
+	if err := c.graphql(ctx, q, map[string]any{"id": id}, &data); err != nil {
+		return reusableLinearParent{}, false, err
+	}
+	if data.Issue == nil || data.Issue.ID == "" {
+		return reusableLinearParent{}, false, nil
+	}
+	i := reusableLinearParent{ID: data.Issue.ID, Identifier: data.Issue.Identifier, Title: data.Issue.Title, URL: data.Issue.URL, ArchivedAt: data.Issue.ArchivedAt, StateName: data.Issue.State.Name, TeamID: data.Issue.Team.ID, ProjectID: data.Issue.Project.ID}
+	for _, label := range data.Issue.Labels.Nodes {
+		i.Labels = append(i.Labels, label.Name)
+	}
+	return i, true, nil
+}
+
 var loopCardRE = regexp.MustCompile("(?s)```loop-card\\s*(\\{.*?\\})\\s*```")
 
 func parseLoopCard(issue linearIssue, cfg *Config) ([]byte, error) {
@@ -210,6 +241,10 @@ func parseLoopCard(issue linearIssue, cfg *Config) ([]byte, error) {
 	raw["linear_issue_uuid"] = issue.ID
 	raw["linear_url"] = issue.URL
 	raw["source_revision"] = issue.UpdatedAt
+	delete(raw, "linear_parent_id")
+	if issue.ParentID != "" {
+		raw["linear_parent_id"] = issue.ParentID
+	}
 	if issue.Priority < 1 || issue.Priority > 4 {
 		return nil, E(2, "%s must have Urgent, High, Medium or Low priority", issue.Identifier)
 	}
@@ -390,6 +425,13 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 			}
 		}
 		if existing != nil {
+			if issue.ParentID != existing.Card.LinearParentID {
+				if changed, metadataErr := s.syncLinearParent(existing.Card.ID, issue.ParentID, issue.UpdatedAt); metadataErr != nil {
+					return nil, metadataErr
+				} else if changed {
+					updated = append(updated, issue.Identifier)
+				}
+			}
 			if existing.Status == "done" || existing.Status == "cancelled" {
 				continue
 			}
@@ -526,6 +568,38 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	return map[string]any{"imported": imported, "updated": updated, "needs_attention": attention, "cancelled": cancelled, "rejected": rejected, "pending": len(final.Outbox)}, nil
+}
+
+func (s *State) syncLinearParent(id, parentID, revision string) (bool, error) {
+	changed := false
+	err := s.withLock(func() error {
+		status, _, raw, card, err := s.readCardPath(id)
+		if err != nil {
+			return err
+		}
+		if card.LinearParentID == parentID {
+			return nil
+		}
+		if parentID == "" {
+			delete(raw, "linear_parent_id")
+		} else {
+			raw["linear_parent_id"] = parentID
+		}
+		raw["source_revision"] = revision
+		encoded, err := Encode(raw)
+		if err != nil {
+			return err
+		}
+		if _, _, err := DecodeCard(encoded, &s.Config); err != nil {
+			return err
+		}
+		if err := s.rewrite(id, status, encoded, "sync-linear-parent", "system/sync"); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return changed, err
 }
 
 func (s *State) syncCancellation(id string) (string, error) {

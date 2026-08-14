@@ -99,7 +99,7 @@ loopctl config set linear.sync_interval_sec 300
 
 ## Grooming
 
-The included `groom` skill clarifies and scopes a request before asking for explicit approval. It automatically keeps small work as one card or turns large work into one parent plus dependency-ordered executable sub-issues. Only sub-issues receive `loop:ready`; all cards have one `type:*` label, a Linear project, priority, and acceptance checklist. Screenshots and diagrams can be supplied as grooming context and attached through safe HTTPS references. Normal intake is Groom → Linear → `loopctl sync`; `loopctl add` is a recovery path for validated card JSON.
+The included `groom` skill clarifies and scopes a request before asking for explicit approval. It automatically keeps small work as one card or turns large work into one parent plus dependency-ordered executable sub-issues, explicitly reusing an existing Linear issue as the parent when appropriate. Only sub-issues receive `loop:ready`; all cards have one `type:*` label, a Linear project, priority, and acceptance checklist. Screenshots and diagrams can be supplied as grooming context and attached through safe HTTPS references. Normal intake is Groom → Linear → `loopctl sync`; `loopctl add` is a recovery path for validated card JSON.
 
 ## Operations
 

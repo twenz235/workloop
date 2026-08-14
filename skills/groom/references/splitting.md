@@ -16,7 +16,9 @@ Do not split only by file or technical layer when that would create unusable fra
 
 ## Plan rules
 
-- Create one parent issue for the overall outcome. It is human-facing and never receives `loop:ready`.
+- Create or explicitly reuse one parent issue for the overall outcome. It is human-facing and never receives `loop:ready`.
+- Use `parent.mode: "reuse"` when splitting an existing approved Linear issue. Include both its UUID and identifier so Workloop can reject a stale or wrong target instead of creating a duplicate.
+- Do not put `linear_parent_id` on the plan parent or child cards; that field is output metadata derived from Linear's actual relationship.
 - Create 2–20 executable sub-issues. Every sub-issue must independently pass the full Definition of Ready.
 - If one outcome needs more than 20 executable cards, group it into multiple coherent parent plans and preview all plans for one approval; do not silently truncate work.
 - Inherit the parent's work type, Linear project, and priority unless a sub-issue materially differs.
@@ -31,6 +33,7 @@ Do not split only by file or technical layer when that would create unusable fra
 {
   "operation_id": "00000000-0000-4000-8000-000000000001",
   "parent": {
+    "mode": "create",
     "title": "Support configurable package pricing",
     "problem": "Pricing changes require code edits",
     "desired_outcome": "Operators can safely change package pricing modes",
@@ -74,5 +77,7 @@ Do not split only by file or technical layer when that would create unusable fra
   ]
 }
 ```
+
+To reuse an existing umbrella, replace `"mode": "create"` with `"mode": "reuse"` and add its exact `"linear_issue_uuid"` and `"linear_issue_id"`. The existing issue must be an unarchived Backlog issue in the configured team and selected project, with the approved title and without `loop:ready`.
 
 The CLI fills repo/base/audit fields and lets sub-issues inherit missing `work_type`, `linear_project_id`, `linear_project`, and `priority` from the parent. Use one stable `operation_id` and rerun the same file after partial failure.

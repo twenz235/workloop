@@ -84,7 +84,7 @@ Claude Code may use `/groom` instead. The skill will clarify missing requirement
 
 You may provide screenshots or diagrams while grooming. The skill inspects them, turns relevant observations into textual requirements, and includes safe HTTPS visual references in the issue. When the connected Linear tool supports file upload, it can first upload a local image to Linear's private storage. Local file paths, base64 payloads, and secret-bearing URLs are never written into a card.
 
-For large work, you do not need to split cards yourself. Groom automatically creates one parent issue describing the overall outcome and 2–20 executable sub-issues. It assigns dependencies, shows the execution waves in one preview, and asks for approval once. The parent remains in Backlog without `loop:ready`; each complete sub-issue receives `loop:ready` and is imported independently by Workloop. If Linear fails partway through creation, rerunning the same approved plan resumes from deterministic IDs without duplicating completed issues.
+For large work, you do not need to split cards yourself. Groom automatically creates one parent issue describing the overall outcome and 2–20 executable sub-issues. If you are splitting an existing Linear issue, Groom reuses that issue explicitly instead of creating a duplicate parent. It assigns dependencies, shows the execution waves and create/reuse choice in one preview, and asks for approval once. The parent remains in Backlog without `loop:ready`; each complete sub-issue receives `loop:ready` and is imported independently by Workloop. If Linear fails partway through creation, rerunning the same approved plan resumes from deterministic IDs without duplicating completed issues.
 
 The normal intake path is:
 

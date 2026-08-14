@@ -40,15 +40,19 @@ func (s *State) GroomPlanCreate(ctx context.Context, data []byte, approvedBy str
 	if err != nil {
 		return nil, err
 	}
-	if err := s.preflightPlanLinear(ctx, parent, cards); err != nil {
+	parentResult, err := s.preflightPlanLinear(ctx, parent, cards)
+	if err != nil {
 		return nil, err
 	}
 
 	waves := planExecutionWaves(order, cards)
-	parentResult, err := s.createPlanParent(ctx, planID, parent, order, cards)
-	if err != nil {
-		return nil, err
+	if parentResult == nil {
+		parentResult, err = s.createPlanParent(ctx, planID, parent, order, cards)
+		if err != nil {
+			return nil, err
+		}
 	}
+	parentResult["plan_id"] = planID
 	parentID, _ := parentResult["id"].(string)
 	results := []map[string]any{}
 	createdIDs := map[string]string{}
@@ -82,6 +86,31 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 
 func normalizePlanParent(input map[string]any) (map[string]any, error) {
 	parent := cloneMap(input)
+	if _, legacyParent := parent["linear_parent_id"]; legacyParent {
+		return nil, E(2, "parent.linear_parent_id is ambiguous; use parent.mode reuse with linear_issue_uuid and linear_issue_id")
+	}
+	mode := strings.TrimSpace(fmt.Sprint(parent["mode"]))
+	if mode == "" || mode == "<nil>" {
+		mode = "create"
+	}
+	if mode != "create" && mode != "reuse" {
+		return nil, E(2, "parent.mode must be create or reuse")
+	}
+	parent["mode"] = mode
+	if mode == "reuse" {
+		parentUUID := strings.TrimSpace(fmt.Sprint(parent["linear_issue_uuid"]))
+		parentIdentifier := strings.TrimSpace(fmt.Sprint(parent["linear_issue_id"]))
+		if !uuidPattern.MatchString(parentUUID) {
+			return nil, E(2, "parent.linear_issue_uuid must be a UUID when parent.mode is reuse")
+		}
+		if parentIdentifier == "" || parentIdentifier == "<nil>" {
+			return nil, E(2, "parent.linear_issue_id is required when parent.mode is reuse")
+		}
+	} else if _, hasUUID := parent["linear_issue_uuid"]; hasUUID {
+		return nil, E(2, "parent.linear_issue_uuid requires parent.mode reuse")
+	} else if _, hasIdentifier := parent["linear_issue_id"]; hasIdentifier {
+		return nil, E(2, "parent.linear_issue_id requires parent.mode reuse")
+	}
 	for _, key := range []string{"title", "problem", "desired_outcome", "work_type", "linear_project_id", "linear_project"} {
 		if strings.TrimSpace(fmt.Sprint(parent[key])) == "" || fmt.Sprint(parent[key]) == "<nil>" {
 			return nil, E(2, "parent.%s is required", key)
@@ -121,6 +150,9 @@ func (s *State) preparePlanCards(planID string, parent map[string]any, inputs []
 	inputOrder := []string{}
 	for _, input := range inputs {
 		card := cloneMap(input)
+		if _, hasParent := card["linear_parent_id"]; hasParent {
+			return nil, nil, E(2, "card linear_parent_id is managed by the groom plan parent")
+		}
 		key := strings.TrimSpace(fmt.Sprint(card["key"]))
 		if !cardIDPattern.MatchString(key) || cards[key] != nil {
 			return nil, nil, E(2, "card key must be unique and match %s", cardIDPattern.String())
@@ -174,10 +206,10 @@ func (s *State) validateGroomDraft(input map[string]any, approvedBy string) erro
 	return err
 }
 
-func (s *State) preflightPlanLinear(ctx context.Context, parent map[string]any, cards map[string]map[string]any) error {
+func (s *State) preflightPlanLinear(ctx context.Context, parent map[string]any, cards map[string]map[string]any) (map[string]any, error) {
 	projects, err := s.LinearProjects(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	availableProjects := map[string]string{}
 	for _, project := range projects {
@@ -189,19 +221,19 @@ func (s *State) preflightPlanLinear(ctx context.Context, parent map[string]any, 
 	}
 	client, err := s.linearClient()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	seenTypes := map[string]bool{}
 	externalDependencies := map[string]bool{}
 	for _, item := range all {
 		projectID := fmt.Sprint(item["linear_project_id"])
 		if availableProjects[projectID] != fmt.Sprint(item["linear_project"]) {
-			return E(2, "Linear project %q (%s) is not available to team %s", item["linear_project"], projectID, s.Config.Linear.Team)
+			return nil, E(2, "Linear project %q (%s) is not available to team %s", item["linear_project"], projectID, s.Config.Linear.Team)
 		}
 		workType := fmt.Sprint(item["work_type"])
 		if !seenTypes[workType] {
 			if _, err := s.linearLabelID(ctx, client, "type:"+workType); err != nil {
-				return E(8, "Linear work type label lookup failed: %v", err)
+				return nil, E(8, "Linear work type label lookup failed: %v", err)
 			}
 			seenTypes[workType] = true
 		}
@@ -211,18 +243,53 @@ func (s *State) preflightPlanLinear(ctx context.Context, parent map[string]any, 
 	}
 	for dependency := range externalDependencies {
 		if _, ok, err := client.findIssue(ctx, dependency); err != nil {
-			return E(8, "Linear dependency lookup failed: %v", err)
+			return nil, E(8, "Linear dependency lookup failed: %v", err)
 		} else if !ok {
-			return E(2, "Linear dependency %s does not exist", dependency)
+			return nil, E(2, "Linear dependency %s does not exist", dependency)
 		}
 	}
 	if _, err := s.linearLabelID(ctx, client, s.Config.Linear.ReadyLabel); err != nil {
-		return E(8, "Linear label lookup failed: %v", err)
+		return nil, E(8, "Linear label lookup failed: %v", err)
 	}
 	if _, err := s.linearStateID(ctx, client, s.Config.Linear.StatusMap["backlog"]); err != nil {
-		return E(8, "Linear backlog lookup failed: %v", err)
+		return nil, E(8, "Linear backlog lookup failed: %v", err)
 	}
-	return nil
+	if fmt.Sprint(parent["mode"]) == "reuse" {
+		return s.reusePlanParent(ctx, client, parent)
+	}
+	return nil, nil
+}
+
+func (s *State) reusePlanParent(ctx context.Context, client *linearClient, parent map[string]any) (map[string]any, error) {
+	issue, ok, err := client.reusableParent(ctx, fmt.Sprint(parent["linear_issue_uuid"]))
+	if err != nil {
+		return nil, E(8, "Linear parent lookup failed: %v", err)
+	}
+	if !ok {
+		return nil, E(2, "Linear parent %s does not exist", parent["linear_issue_uuid"])
+	}
+	if issue.Identifier != fmt.Sprint(parent["linear_issue_id"]) {
+		return nil, E(2, "Linear parent identifier mismatch: expected %s, got %s", parent["linear_issue_id"], issue.Identifier)
+	}
+	if issue.Title != fmt.Sprint(parent["title"]) {
+		return nil, E(2, "Linear parent %s title no longer matches the approved plan", issue.Identifier)
+	}
+	if issue.TeamID != s.Config.Linear.TeamID {
+		return nil, E(2, "Linear parent %s belongs to a different team", issue.Identifier)
+	}
+	if issue.ProjectID != fmt.Sprint(parent["linear_project_id"]) {
+		return nil, E(2, "Linear parent %s belongs to a different project", issue.Identifier)
+	}
+	if issue.ArchivedAt != "" {
+		return nil, E(2, "Linear parent %s is archived", issue.Identifier)
+	}
+	if issue.StateName != s.Config.Linear.StatusMap["backlog"] {
+		return nil, E(2, "Linear parent %s must be in %s", issue.Identifier, s.Config.Linear.StatusMap["backlog"])
+	}
+	if containsString(issue.Labels, s.Config.Linear.ReadyLabel) {
+		return nil, E(2, "Linear parent %s must not have %s", issue.Identifier, s.Config.Linear.ReadyLabel)
+	}
+	return map[string]any{"id": issue.ID, "identifier": issue.Identifier, "title": issue.Title, "url": issue.URL, "status": issue.StateName, "reused": true}, nil
 }
 
 func (s *State) createPlanParent(ctx context.Context, planID string, parent map[string]any, order []string, cards map[string]map[string]any) (map[string]any, error) {
