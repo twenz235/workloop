@@ -180,6 +180,54 @@ func TestConflictReservation(t *testing.T) {
 	}
 }
 
+func TestClaimReusesOwnActiveReservation(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "retry", []string{"src/retry.go"})
+	if _, err := s.Claim("dev", "w1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.withMoveInternal("retry", "needs_attention", "dev/test", "retry requested", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.withMoveInternal("retry", "todo", "human/test", "approved retry", map[string]any{"claimed_at": nil, "claimed_by": nil}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim("dev", "w2"); err != nil {
+		t.Fatalf("reclaim with active reservation: %v", err)
+	}
+	if status, _, err := s.Locate("retry"); err != nil || status != "claimed-dev" {
+		t.Fatalf("status=%s err=%v", status, err)
+	}
+}
+
+func TestClaimReopensReleasedReservation(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "released", []string{"src/released.go"})
+	if _, err := s.Claim("dev", "w1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.withMoveInternal("released", "needs_attention", "dev/test", "retry requested", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.releaseReservation("released"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.withMoveInternal("released", "todo", "human/test", "approved retry", map[string]any{"claimed_at": nil, "claimed_by": nil}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim("dev", "w2"); err != nil {
+		t.Fatalf("reclaim with released reservation: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(s.Root, "runtime", "reservations", "released.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reservation Reservation
+	if err := json.Unmarshal(b, &reservation); err != nil || reservation.ReleasedAt != nil {
+		t.Fatalf("reservation=%+v err=%v", reservation, err)
+	}
+}
+
 func TestMoveRulesAndFindings(t *testing.T) {
 	s := testState(t)
 	addTestCard(t, s, "a", []string{"a"})

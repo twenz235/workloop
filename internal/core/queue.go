@@ -489,6 +489,20 @@ func (s *State) Claim(role, worker string) (map[string]any, error) {
 	return result, err
 }
 
+// ClaimAndSync claims locally first, then immediately mirrors the resulting
+// state to Linear. Linear failures are intentionally left in the outbox so a
+// remote outage never strands a locally claimed card without a worker.
+func (s *State) ClaimAndSync(ctx context.Context, role, worker string) (map[string]any, error) {
+	result, err := s.Claim(role, worker)
+	if err != nil {
+		return nil, err
+	}
+	if s.Config.Linear.Enabled {
+		_, _ = s.FlushLinearOutbox(ctx)
+	}
+	return result, nil
+}
+
 func (s *State) blockWaitingCards() error {
 	entries, err := os.ReadDir(filepath.Join(s.Root, "queue", "todo"))
 	if err != nil {
@@ -663,6 +677,19 @@ func (s *State) createReservation(c *Card) error {
 	b, _ := Encode(r)
 	path := filepath.Join(s.Root, "runtime", "reservations", c.ID+".json")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if errors.Is(err, fs.ErrExist) {
+		existingData, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		var existing Reservation
+		if json.Unmarshal(existingData, &existing) != nil || existing.CardID != c.ID {
+			return E(7, "invalid reservation for %s", c.ID)
+		}
+		// A reservation belongs to the card, not to one claim attempt. Reusing it
+		// keeps rework exclusive; replacing a released record starts a new cycle.
+		return writeAtomic(path, b, 0600)
+	}
 	if err != nil {
 		return err
 	}

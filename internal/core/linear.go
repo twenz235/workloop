@@ -357,14 +357,10 @@ func actionKey(a linearAction) string {
 	return a.Kind + "|" + a.IssueID + "|" + a.StateID + "|" + a.StateName
 }
 
-func (s *State) Sync(ctx context.Context) (map[string]any, error) {
-	client, err := s.linearClient()
-	if err != nil {
-		return nil, err
-	}
+func (s *State) flushLinearOutbox(ctx context.Context, client *linearClient) (int, error) {
 	runtime, err := s.loadLinearRuntime()
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	original := append([]linearAction(nil), runtime.Outbox...)
 	pending := runtime.Outbox[:0]
@@ -396,7 +392,68 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 			pending = append(pending, a)
 		}
 	}
-	runtime.Outbox = pending
+	originalKeys := map[string]bool{}
+	for _, a := range original {
+		originalKeys[actionKey(a)] = true
+	}
+	if err := s.updateLinearRuntime(func(current *linearRuntime) {
+		merged := []linearAction{}
+		seen := map[string]bool{}
+		for _, a := range current.Outbox {
+			if originalKeys[actionKey(a)] {
+				continue
+			}
+			k := actionKey(a)
+			if !seen[k] {
+				merged = append(merged, a)
+				seen[k] = true
+			}
+		}
+		for _, a := range pending {
+			k := actionKey(a)
+			if !seen[k] {
+				merged = append(merged, a)
+				seen[k] = true
+			}
+		}
+		current.Outbox = merged
+	}); err != nil {
+		return 0, err
+	}
+	final, err := s.loadLinearRuntime()
+	if err != nil {
+		return 0, err
+	}
+	return len(final.Outbox), nil
+}
+
+// FlushLinearOutbox pushes queued state and label changes without performing a
+// full backlog sync. Failed remote actions remain queued for the periodic sync.
+func (s *State) FlushLinearOutbox(ctx context.Context) (int, error) {
+	runtime, err := s.loadLinearRuntime()
+	if err != nil || len(runtime.Outbox) == 0 {
+		return len(runtime.Outbox), err
+	}
+	client, err := s.linearClient()
+	if err != nil {
+		return len(runtime.Outbox), err
+	}
+	return s.flushLinearOutbox(ctx, client)
+}
+
+func (s *State) Sync(ctx context.Context) (map[string]any, error) {
+	client, err := s.linearClient()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.flushLinearOutbox(ctx, client); err != nil {
+		return nil, err
+	}
+	runtime, err := s.loadLinearRuntime()
+	if err != nil {
+		return nil, err
+	}
+	original := append([]linearAction(nil), runtime.Outbox...)
 	issues, err := client.issues(ctx, s.Config.Linear.TeamID)
 	if err != nil {
 		return nil, E(8, "Linear sync failed: %v", err)
