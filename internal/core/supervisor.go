@@ -366,6 +366,18 @@ func (s *State) finishWorker(ctx context.Context, d workerDone) {
 			_, _ = s.withMoveInternal(d.cardID, "in_review", "qa/supervisor", fmt.Sprintf("base or review head changed during QA; expected base %s, current origin/dev %s", d.baseSHA, latestBaseSHA), map[string]any{"stale": true, "base_sha": latestBaseSHA, "base_sync_pending": false, "claimed_at": nil, "claimed_by": nil})
 			return
 		}
+		if _, err := s.PatchInternal(d.cardID, map[string]any{
+			"qa_evidence":           d.result.Evidence,
+			"qa_acceptance_results": d.result.AcceptanceResults,
+			"stale":                 false,
+		}, "QA evidence"); err != nil {
+			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "qa/supervisor", fmt.Sprintf("QA evidence persistence failed: %v", err), nil)
+			return
+		}
+		if err := s.publishQAReport(ctx, d.cardID); err != nil {
+			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "qa/supervisor", fmt.Sprintf("QA acceptance report failed: %v", err), nil)
+			return
+		}
 	}
 	if d.result.Outcome == "needs_attention" {
 		_, _ = s.withMoveInternal(d.cardID, "needs_attention", d.role+"/supervisor", runnerResultNote(d.cardID, d.result), nil)
@@ -406,7 +418,6 @@ func (s *State) finishWorker(ctx context.Context, d workerDone) {
 		_, _ = s.withMoveInternal(d.cardID, "in_review", "dev/supervisor", "runner completed after origin/dev base sync", map[string]any{"branch": d.result.Branch, "pr": d.result.PR, "base_sha": latestBaseSHA, "base_sync_pending": false, "tested_head_sha": d.result.HeadSHA, "claimed_at": nil, "claimed_by": nil})
 		return
 	}
-	_, _ = s.PatchInternal(d.cardID, map[string]any{"qa_evidence": d.result.Evidence, "stale": false}, "QA evidence")
 	if _, err := s.QAMerge(ctx, d.cardID, "qa/supervisor"); err != nil {
 		to := "needs_attention"
 		patch := map[string]any(nil)

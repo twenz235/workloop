@@ -394,6 +394,11 @@ confirms the PR head includes that base, and verifies every check returned by
 receipt.
 The supervisor normally calls it.
 
+Before this merge gate, QA evidence is persisted per acceptance criterion. The
+supervisor posts an idempotent report comment to Linear and updates the visible
+Markdown checklist: `passed` becomes `[x]`, while `failed`, `blocked`, and
+`not_run` stay `[ ]`. The fenced `loop-card` contract is never rewritten.
+
 ### `loopctl mark-stale`
 
 ```text

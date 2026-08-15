@@ -148,7 +148,7 @@ func validateDependenciesWithExternal(card *Card, cards []struct {
 func normalizeNew(raw map[string]any, c *Card, cfg *Config) {
 	delete(raw, "status")
 	raw["hot"] = loopglob.PatternsOverlap(c.Touches, cfg.HotPaths)
-	defaults := map[string]any{"attempts": 0, "max_attempts": 2, "rework_count": 0, "max_rework": 2, "conflict_skips": 0, "claimed_at": nil, "claimed_by": nil, "worktree": nil, "branch": nil, "pr": nil, "base_sha": nil, "base_sync_pending": false, "tested_head_sha": nil, "stale": false, "spec_changed": false, "qa_findings": []any{}, "qa_evidence": []any{}, "proposed": []any{}, "history": []any{}, "linear_labels": []string{}}
+	defaults := map[string]any{"attempts": 0, "max_attempts": 2, "rework_count": 0, "max_rework": 2, "conflict_skips": 0, "claimed_at": nil, "claimed_by": nil, "worktree": nil, "branch": nil, "pr": nil, "base_sha": nil, "base_sync_pending": false, "tested_head_sha": nil, "stale": false, "spec_changed": false, "qa_findings": []any{}, "qa_evidence": []any{}, "qa_acceptance_results": []any{}, "proposed": []any{}, "history": []any{}, "linear_labels": []string{}}
 	for k, v := range defaults {
 		if _, ok := raw[k]; !ok {
 			raw[k] = v
@@ -353,7 +353,7 @@ func (s *State) moveLocked(id, to, actor, note string, patch map[string]any, int
 }
 
 func (s *State) Move(id, to, actor, note string, patch map[string]any) (map[string]any, error) {
-	allowed := map[string]bool{"branch": true, "pr": true, "base_sha": true, "tested_head_sha": true, "worktree": true, "stale": true, "spec_changed": true, "qa_evidence": true}
+	allowed := map[string]bool{"branch": true, "pr": true, "base_sha": true, "tested_head_sha": true, "worktree": true, "stale": true, "spec_changed": true, "qa_evidence": true, "qa_acceptance_results": true}
 	for key := range patch {
 		if !allowed[key] {
 			return nil, E(2, "patch field %q is not mutable", key)

@@ -27,7 +27,7 @@ func TestRunnerPromptIncludesOriginDevBaseSyncContract(t *testing.T) {
 func TestRunProviderWritesValidatedResultAndStripsLinearToken(t *testing.T) {
 	dir := t.TempDir()
 	provider := filepath.Join(dir, "fake-claude")
-	script := "#!/bin/sh\n[ -z \"$LINEAR_API_TOKEN\" ] || exit 9\nfor arg do [ \"$arg\" != '-' ] || exit 8; done\nprompt=$(sed -n '1p')\n[ -n \"$prompt\" ] || exit 7\nprintf '%s' '{\"structured_output\":{\"version\":1,\"card_id\":\"card-1\",\"role\":\"dev\",\"attempt\":1,\"outcome\":\"completed\",\"evidence\":[\"tests pass\"],\"branch\":\"loop/card-1\",\"pr\":1,\"base_sha\":\"base\",\"head_sha\":\"abc\"}}'\n"
+	script := "#!/bin/sh\n[ -z \"$LINEAR_API_TOKEN\" ] || exit 9\nfor arg do [ \"$arg\" != '-' ] || exit 8; done\nprompt=$(sed -n '1p')\n[ -n \"$prompt\" ] || exit 7\nprintf '%s' '{\"structured_output\":{\"version\":1,\"card_id\":\"card-1\",\"role\":\"dev\",\"attempt\":1,\"outcome\":\"completed\",\"evidence\":[\"tests pass\"],\"acceptance_results\":[],\"branch\":\"loop/card-1\",\"pr\":1,\"base_sha\":\"base\",\"head_sha\":\"abc\"}}'\n"
 	if err := os.WriteFile(provider, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -85,13 +85,40 @@ func TestResultSchemaTypesAndRequiresEveryProperty(t *testing.T) {
 
 func TestRunnerAcceptsNullableOptionalResultFields(t *testing.T) {
 	e := RunnerEnvelope{Version: 1, CardID: "card-null", Role: "qa", Attempt: 1}
-	result := []byte(`{"version":1,"card_id":"card-null","role":"qa","attempt":1,"outcome":"needs_attention","evidence":[],"branch":null,"pr":null,"head_sha":null,"error":"acceptance command go test ./... failed: assertion output requires review"}`)
+	result := []byte(`{"version":1,"card_id":"card-null","role":"qa","attempt":1,"outcome":"needs_attention","evidence":[],"acceptance_results":[],"branch":null,"pr":null,"head_sha":null,"error":"acceptance command go test ./... failed: assertion output requires review"}`)
 	r, err := parseRunnerResult(result, e)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if r.PR != nil || r.Branch != "" || r.HeadSHA != "" || !strings.Contains(r.Error, "go test ./...") {
 		t.Fatalf("result=%+v", r)
+	}
+}
+
+func TestCompletedQARequiresEveryAcceptanceCriterionToPass(t *testing.T) {
+	e := RunnerEnvelope{
+		Version: 1, CardID: "card-qa", Role: "qa", Attempt: 1,
+		Card: json.RawMessage(`{"id":"card-qa","contract_hash":"hash","acceptance":["first","second"]}`),
+	}
+	valid := []byte(`{"version":1,"card_id":"card-qa","role":"qa","attempt":1,"outcome":"completed","evidence":["verification"],"acceptance_results":[{"criterion_index":1,"status":"passed","evidence":"test first"},{"criterion_index":2,"status":"passed","evidence":"test second"}],"branch":null,"pr":null,"base_sha":"base","head_sha":"head","error":null}`)
+	if _, err := parseRunnerResult(valid, e); err != nil {
+		t.Fatal(err)
+	}
+	failed := []byte(`{"version":1,"card_id":"card-qa","role":"qa","attempt":1,"outcome":"completed","evidence":["verification"],"acceptance_results":[{"criterion_index":1,"status":"passed","evidence":"test first"},{"criterion_index":2,"status":"failed","evidence":"test second failed"}],"branch":null,"pr":null,"base_sha":"base","head_sha":"head","error":null}`)
+	if _, err := parseRunnerResult(failed, e); ExitCode(err) != 11 || !strings.Contains(err.Error(), "criterion 2") {
+		t.Fatalf("exit=%d err=%v", ExitCode(err), err)
+	}
+}
+
+func TestQAAcceptanceResultsRejectDuplicatesAndMissingEvidence(t *testing.T) {
+	if err := validateAcceptanceResults([]AcceptanceResult{
+		{CriterionIndex: 1, Status: "passed", Evidence: "ok"},
+		{CriterionIndex: 1, Status: "passed", Evidence: "again"},
+	}, 1, "needs_attention"); err == nil || !strings.Contains(err.Error(), "repeats") {
+		t.Fatalf("duplicate validation err=%v", err)
+	}
+	if err := validateAcceptanceResults([]AcceptanceResult{{CriterionIndex: 1, Status: "failed"}}, 1, "needs_attention"); err == nil || !strings.Contains(err.Error(), "requires evidence") {
+		t.Fatalf("evidence validation err=%v", err)
 	}
 }
 
@@ -139,7 +166,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$sandbox" = "read-only" ] || { printf 'QA sandbox mismatch' >&2; exit 2; }
 [ "$approve" = "no" ] || { printf 'QA must not auto-approve' >&2; exit 2; }
-	printf '%s' '{"version":1,"card_id":"card-2","role":"qa","attempt":3,"outcome":"completed","evidence":["ok"],"base_sha":"base","head_sha":"head"}' > "$out"
+	printf '%s' '{"version":1,"card_id":"card-2","role":"qa","attempt":3,"outcome":"completed","evidence":["ok"],"acceptance_results":[],"base_sha":"base","head_sha":"head"}' > "$out"
 `
 	if err := os.WriteFile(provider, []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -175,7 +202,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$approve" = "yes" ] || { printf 'Dev approval missing' >&2; exit 2; }
 [ "$sandbox" = "no" ] || { printf 'incompatible Dev sandbox flag' >&2; exit 2; }
-	printf '%s' '{"version":1,"card_id":"card-4","role":"dev","attempt":1,"outcome":"completed","evidence":["ok"],"branch":"loop/card-4","pr":4,"base_sha":"base","head_sha":"head"}' > "$out"
+	printf '%s' '{"version":1,"card_id":"card-4","role":"dev","attempt":1,"outcome":"completed","evidence":["ok"],"acceptance_results":[],"branch":"loop/card-4","pr":4,"base_sha":"base","head_sha":"head"}' > "$out"
 `
 	if err := os.WriteFile(provider, []byte(script), 0700); err != nil {
 		t.Fatal(err)

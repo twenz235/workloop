@@ -1232,7 +1232,7 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 	delete(raw, "linear_url")
 	delete(raw, "source_revision")
 	delete(raw, "contract_hash")
-	for _, k := range []string{"status", "hot", "attempts", "max_attempts", "rework_count", "max_rework", "conflict_skips", "claimed_at", "claimed_by", "worktree", "branch", "pr", "base_sha", "tested_head_sha", "stale", "spec_changed", "qa_findings", "proposed", "history"} {
+	for _, k := range []string{"status", "hot", "attempts", "max_attempts", "rework_count", "max_rework", "conflict_skips", "claimed_at", "claimed_by", "worktree", "branch", "pr", "base_sha", "tested_head_sha", "stale", "spec_changed", "qa_findings", "qa_evidence", "qa_acceptance_results", "proposed", "history"} {
 		delete(raw, k)
 	}
 	cardBlock, _ := json.MarshalIndent(raw, "", "  ")

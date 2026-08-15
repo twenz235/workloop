@@ -210,8 +210,14 @@ func (s *State) QAMerge(ctx context.Context, id, by string) (map[string]any, err
 			return nil, E(2, "blocking findings remain")
 		}
 	}
+	if err := storedAcceptanceResultsComplete(card); err != nil {
+		return nil, E(2, "QA acceptance results incomplete: %v", err)
+	}
 	if len(card.QAEvidence) == 0 {
 		return nil, E(2, "QA acceptance evidence is required")
+	}
+	if err := s.publishQAReport(ctx, id); err != nil {
+		return nil, err
 	}
 	n, err := prNumber(card.PR)
 	if err != nil {

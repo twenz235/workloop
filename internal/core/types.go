@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const Version = "0.2.6"
+const Version = "0.2.7"
 
 var cardIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 var workerIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -136,26 +136,27 @@ type Card struct {
 	ApprovedBy      string          `json:"approved_by"`
 	// Status is an in-memory execution phase only. Linear owns workflow state;
 	// never serialize this field into a canonical card snapshot.
-	Status          string    `json:"-"`
-	Hot             bool      `json:"hot"`
-	Attempts        int       `json:"attempts"`
-	MaxAttempts     int       `json:"max_attempts"`
-	ReworkCount     int       `json:"rework_count"`
-	MaxRework       int       `json:"max_rework"`
-	ConflictSkips   int       `json:"conflict_skips"`
-	ClaimedAt       *string   `json:"claimed_at"`
-	ClaimedBy       *string   `json:"claimed_by"`
-	Worktree        *string   `json:"worktree"`
-	Branch          *string   `json:"branch"`
-	PR              any       `json:"pr"`
-	BaseSHA         *string   `json:"base_sha"`
-	BaseSyncPending bool      `json:"base_sync_pending,omitempty"`
-	TestedHeadSHA   *string   `json:"tested_head_sha"`
-	Stale           bool      `json:"stale"`
-	SpecChanged     bool      `json:"spec_changed"`
-	QAFindings      []Finding `json:"qa_findings"`
-	QAEvidence      []string  `json:"qa_evidence,omitempty"`
-	History         []History `json:"history"`
+	Status              string             `json:"-"`
+	Hot                 bool               `json:"hot"`
+	Attempts            int                `json:"attempts"`
+	MaxAttempts         int                `json:"max_attempts"`
+	ReworkCount         int                `json:"rework_count"`
+	MaxRework           int                `json:"max_rework"`
+	ConflictSkips       int                `json:"conflict_skips"`
+	ClaimedAt           *string            `json:"claimed_at"`
+	ClaimedBy           *string            `json:"claimed_by"`
+	Worktree            *string            `json:"worktree"`
+	Branch              *string            `json:"branch"`
+	PR                  any                `json:"pr"`
+	BaseSHA             *string            `json:"base_sha"`
+	BaseSyncPending     bool               `json:"base_sync_pending,omitempty"`
+	TestedHeadSHA       *string            `json:"tested_head_sha"`
+	Stale               bool               `json:"stale"`
+	SpecChanged         bool               `json:"spec_changed"`
+	QAFindings          []Finding          `json:"qa_findings"`
+	QAEvidence          []string           `json:"qa_evidence,omitempty"`
+	QAAcceptanceResults []AcceptanceResult `json:"qa_acceptance_results,omitempty"`
+	History             []History          `json:"history"`
 }
 
 type Visual struct {
@@ -171,6 +172,16 @@ type Finding struct {
 	Violates string `json:"violates,omitempty"`
 	Evidence string `json:"evidence"`
 	Severity string `json:"severity"`
+}
+
+// AcceptanceResult is the evidence-backed result for one acceptance
+// criterion. CriterionIndex is one-based and follows Card.Acceptance order.
+// Only passed results are mapped to checked boxes in Linear; every other
+// status remains unchecked and is shown in the QA report comment.
+type AcceptanceResult struct {
+	CriterionIndex int    `json:"criterion_index"`
+	Status         string `json:"status"`
+	Evidence       string `json:"evidence"`
 }
 
 type History struct {

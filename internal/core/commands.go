@@ -392,9 +392,10 @@ func (s *State) RetryQA(id, by, note string) (map[string]any, error) {
 			return E(2, "cannot retry QA while the Linear contract is changed")
 		}
 		out, e = s.moveLocked(id, "in_review", by, "QA retry: "+note, map[string]any{
-			"claimed_at":  nil,
-			"claimed_by":  nil,
-			"qa_evidence": []string{},
+			"claimed_at":            nil,
+			"claimed_by":            nil,
+			"qa_evidence":           []string{},
+			"qa_acceptance_results": []AcceptanceResult{},
 		}, true)
 		return e
 	})
