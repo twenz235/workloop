@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +29,13 @@ type prFact struct {
 		OID string `json:"oid"`
 	} `json:"mergeCommit"`
 	URL string `json:"url"`
+}
+
+type prCheck struct {
+	Name   string `json:"name"`
+	State  string `json:"state"`
+	Bucket string `json:"bucket"`
+	Link   string `json:"link"`
 }
 
 type githubCache struct {
@@ -97,14 +106,18 @@ func prNumber(v any) (int, error) {
 	return 0, fmt.Errorf("card has no PR number")
 }
 
-func (s *State) gh(ctx context.Context, args ...string) ([]byte, error) {
+func (s *State) ghRaw(ctx context.Context, args ...string) ([]byte, error) {
 	path, err := exec.LookPath("gh")
 	if err != nil {
 		return nil, E(8, "gh CLI unavailable")
 	}
 	cmd := execCommandContext(ctx, path, args...)
 	cmd.Dir = s.Config.RepoPath
-	b, err := cmd.CombinedOutput()
+	return cmd.CombinedOutput()
+}
+
+func (s *State) gh(ctx context.Context, args ...string) ([]byte, error) {
+	b, err := s.ghRaw(ctx, args...)
 	if err != nil {
 		return nil, E(8, "gh failed: %s", strings.TrimSpace(string(b)))
 	}
@@ -121,6 +134,47 @@ func (s *State) prView(ctx context.Context, n int) (prFact, error) {
 		return p, E(8, "invalid gh response: %v", err)
 	}
 	return p, nil
+}
+
+func (s *State) verifyPRChecks(ctx context.Context, n int) ([]string, error) {
+	b, commandErr := s.ghRaw(ctx, "pr", "checks", strconv.Itoa(n), "--repo", s.Config.Repo, "--json", "name,state,bucket,link")
+	if len(bytes.TrimSpace(b)) == 0 {
+		if commandErr != nil {
+			return nil, E(8, "gh checks failed: %v", commandErr)
+		}
+		return nil, E(2, "GitHub returned no checks for PR %d", n)
+	}
+	var checks []prCheck
+	if err := json.Unmarshal(b, &checks); err != nil {
+		return nil, E(8, "invalid gh checks response: %v", err)
+	}
+	if len(checks) == 0 {
+		return nil, E(2, "GitHub returned no checks for PR %d", n)
+	}
+	passed := []string{}
+	failed := []string{}
+	for _, check := range checks {
+		name := strings.TrimSpace(check.Name)
+		if name == "" {
+			name = "<unnamed check>"
+		}
+		bucket := strings.ToLower(strings.TrimSpace(check.Bucket))
+		state := strings.ToUpper(strings.TrimSpace(check.State))
+		if bucket == "pass" || (bucket == "" && state == "SUCCESS") {
+			passed = append(passed, name)
+			continue
+		}
+		status := bucket
+		if status == "" {
+			status = strings.ToLower(state)
+		}
+		failed = append(failed, fmt.Sprintf("%s (%s)", name, status))
+	}
+	if len(failed) > 0 {
+		return nil, E(2, "GitHub checks not passing: %s", strings.Join(failed, ", "))
+	}
+	sort.Strings(passed)
+	return passed, nil
 }
 
 func (s *State) QAMerge(ctx context.Context, id, by string) (map[string]any, error) {
@@ -174,12 +228,13 @@ func (s *State) QAMerge(ctx context.Context, id, by string) (map[string]any, err
 		return nil, E(2, "tested head SHA does not match PR")
 	}
 	if p.State == "MERGED" && p.MergeCommit != nil {
-		return s.writeMergeReceipt(id, n, p.MergeCommit.OID, p.HeadRefOid, by)
+		return s.writeMergeReceipt(id, n, p.MergeCommit.OID, p.HeadRefOid, by, nil)
 	}
 	if p.State != "OPEN" {
 		return nil, E(2, "PR is not open")
 	}
-	if _, err := s.gh(ctx, "pr", "checks", strconv.Itoa(n), "--repo", s.Config.Repo, "--required"); err != nil {
+	checks, err := s.verifyPRChecks(ctx, n)
+	if err != nil {
 		return nil, err
 	}
 	if _, err := s.gh(ctx, "pr", "merge", strconv.Itoa(n), "--repo", s.Config.Repo, "--merge", "--match-head-commit", *card.TestedHeadSHA); err != nil {
@@ -195,11 +250,14 @@ func (s *State) QAMerge(ctx context.Context, id, by string) (map[string]any, err
 	if p.HeadRefOid != *card.TestedHeadSHA {
 		return nil, E(7, "GitHub merged a head different from the tested SHA")
 	}
-	return s.writeMergeReceipt(id, n, p.MergeCommit.OID, p.HeadRefOid, by)
+	return s.writeMergeReceipt(id, n, p.MergeCommit.OID, p.HeadRefOid, by, checks)
 }
 
-func (s *State) writeMergeReceipt(id string, n int, mergeSHA, headSHA, by string) (map[string]any, error) {
+func (s *State) writeMergeReceipt(id string, n int, mergeSHA, headSHA, by string, checks []string) (map[string]any, error) {
 	receipt := map[string]any{"card_id": id, "pr": n, "base": "dev", "merge_sha": mergeSHA, "tested_head_sha": headSHA, "by": by, "merged_at": Now()}
+	if len(checks) > 0 {
+		receipt["checks"] = checks
+	}
 	b, _ := Encode(receipt)
 	path := filepath.Join(s.Root, "runtime", "merges")
 	if err := os.MkdirAll(path, 0700); err != nil {

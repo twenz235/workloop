@@ -237,6 +237,74 @@ func TestLinearSyncRehydratesAfterNeedsAttentionLabelRemoved(t *testing.T) {
 	}
 }
 
+func TestLinearNeedsAttentionQueuesDiagnosticCommentWithoutEchoingSyncState(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "linear-comment", []string{"src/comment.go"})
+	s.Config.Linear.Enabled = true
+	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	s.Config.Linear.TeamID = "team-1"
+	t.Setenv("LINEAR_API_TOKEN", "x")
+	if _, err := s.withMoveInternal("linear-comment", "claimed-dev", "system/sync", "Linear claim snapshot", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.updateLinearRuntime(func(runtime *linearRuntime) { runtime.Outbox = nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.withMoveInternal("linear-comment", "needs_attention", "system/sync", "Linear contract changed after claim", map[string]any{"spec_changed": true}); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := s.loadLinearRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.Outbox) != 2 || runtime.Outbox[0].Kind != "attention" || runtime.Outbox[1].Kind != "comment" {
+		t.Fatalf("outbox=%+v", runtime.Outbox)
+	}
+
+	var commentBody string
+	oldClient := defaultLinearHTTPClient
+	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		var request struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			return nil, err
+		}
+		switch {
+		case strings.Contains(request.Query, "TeamLabels"):
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":{"team":{"labels":{"nodes":[{"id":"attention-id","name":"loop:needs-attention"}]}}}}`)), Header: http.Header{}}, nil
+		case strings.Contains(request.Query, "AddLoopLabel"):
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":{"issueAddLabel":{"success":true}}}`)), Header: http.Header{}}, nil
+		case strings.Contains(request.Query, "LoopIssueComments"):
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":{"issue":{"comments":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`)), Header: http.Header{}}, nil
+		case strings.Contains(request.Query, "AddLoopComment"):
+			if input, ok := request.Variables["input"].(map[string]any); ok {
+				commentBody, _ = input["body"].(string)
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":{"commentCreate":{"success":true,"comment":{"id":"comment-1"}}}}`)), Header: http.Header{}}, nil
+		default:
+			return nil, fmt.Errorf("unexpected Linear request: %s", request.Query)
+		}
+	})}
+	t.Cleanup(func() { defaultLinearHTTPClient = oldClient })
+	if pending, err := s.FlushLinearOutbox(context.Background()); err != nil || pending != 0 {
+		t.Fatalf("pending=%d err=%v", pending, err)
+	}
+	if !strings.Contains(commentBody, "Linear contract changed after claim") ||
+		!strings.Contains(commentBody, "**Why:**") ||
+		!strings.Contains(commentBody, "**Needed:**") ||
+		!strings.Contains(commentBody, "**Fix:**") ||
+		!strings.Contains(commentBody, "**Recommendation:**") {
+		t.Fatalf("comment=%q", commentBody)
+	}
+	_, _, card, err := s.ReadCard("linear-comment")
+	if err != nil || !containsString(card.LinearLabels, "loop:needs-attention") {
+		t.Fatalf("card=%+v err=%v", card, err)
+	}
+}
+
 func TestClaimFailsClosedWithoutFreshLinearSnapshot(t *testing.T) {
 	s := testState(t)
 	addTestCard(t, s, "stale-snapshot", []string{"stale.go"})
@@ -294,8 +362,8 @@ func TestLinearReconcileDoesNotEchoLocalStateToBoard(t *testing.T) {
 		t.Fatalf("status=%q card=%+v err=%v", status, card, err)
 	}
 	runtime, err := s.loadLinearRuntime()
-	if err != nil || len(runtime.Outbox) != 0 {
-		t.Fatalf("runtime=%+v err=%v; reconcile must not echo a state mutation", runtime, err)
+	if err != nil || len(runtime.Outbox) != 1 || runtime.Outbox[0].Kind != "comment" {
+		t.Fatalf("runtime=%+v err=%v; reconcile must not echo a state mutation but should explain the recovery", runtime, err)
 	}
 }
 

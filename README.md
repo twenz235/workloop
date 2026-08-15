@@ -138,7 +138,15 @@ until explicitly resolved:
 ```bash
 loopctl resolve eng-123 --to rework --by human/alice \
   --note "The updated requirement is approved"
+
+loopctl qa-retry eng-123 --by human/alice \
+  --note "The QA provider is healthy; rerun against the current PR"
 ```
+
+`qa-retry` is the explicit human path from `needs_attention` back to In
+Review. It requires an existing PR, an unchanged contract, and no unresolved
+blocking finding; it clears old QA evidence and records the recovery note in
+Linear.
 
 Never edit `.loopctl` runtime files manually or move a card directly to Done.
 Only QA merge followed by a verified `sync-done` can complete work.

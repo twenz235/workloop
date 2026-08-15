@@ -343,6 +343,60 @@ func (s *State) Resolve(ctx context.Context, id, to, by, note string, closePR bo
 	return out, err
 }
 
+// RetryQA is the explicit human recovery path for a card that is paused in
+// needs_attention but still has a reviewable PR and no unresolved blocking QA
+// finding. It deliberately preserves stale/specification facts and clears
+// prior QA evidence so the next QA claim must establish fresh evidence.
+func (s *State) RetryQA(id, by, note string) (map[string]any, error) {
+	parts := strings.Split(by, "/")
+	note = strings.TrimSpace(note)
+	if len(parts) != 2 || parts[0] != "human" || !workerIDPattern.MatchString(parts[1]) || note == "" {
+		return nil, E(2, "human identity and note are required")
+	}
+	status, _, _, before, err := s.readCardPath(id)
+	if err != nil {
+		return nil, err
+	}
+	if status != "needs_attention" {
+		return nil, E(2, "qa-retry requires needs_attention")
+	}
+	if before.SpecChanged {
+		return nil, E(2, "cannot retry QA while the Linear contract is changed")
+	}
+	if _, err := prNumber(before.PR); err != nil {
+		return nil, E(2, "qa-retry requires an existing PR")
+	}
+	for _, finding := range before.QAFindings {
+		if finding.Severity == "blocking" {
+			return nil, E(2, "blocking QA findings require resolve --to rework before QA retry")
+		}
+	}
+
+	var out map[string]any
+	err = s.withLock(func() error {
+		currentStatus, _, _, current, e := s.readCardPath(id)
+		if e != nil {
+			return e
+		}
+		if currentStatus != "needs_attention" {
+			return E(4, "card changed before QA retry")
+		}
+		if fmt.Sprint(current.PR) != fmt.Sprint(before.PR) {
+			return E(4, "card PR changed before QA retry")
+		}
+		if current.SpecChanged {
+			return E(2, "cannot retry QA while the Linear contract is changed")
+		}
+		out, e = s.moveLocked(id, "in_review", by, "QA retry: "+note, map[string]any{
+			"claimed_at":  nil,
+			"claimed_by":  nil,
+			"qa_evidence": []string{},
+		}, true)
+		return e
+	})
+	return out, err
+}
+
 func (s *State) Doctor() (map[string]any, error) {
 	if err := s.RecoverTransactions(); err != nil {
 		return nil, err

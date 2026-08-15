@@ -14,6 +14,7 @@ Operate from inside the target Git repository. Prefer Workloop's built-in discov
 - Diagnose: run `loopctl doctor`, then targeted `list` or `reconcile`. Report evidence before changing state.
 - Stop/restart: use `loopctl stop` or `loopctl restart`; never kill workers or edit queue files directly.
 - Human resolution: use `loopctl resolve <id> --to todo|rework|cancelled --by human/<id> --note <reason>` only after the user chooses the disposition.
+- QA recovery: use `loopctl qa-retry <id> --by human/<id> --note <reason>` to return a `needs_attention` card with a reviewable PR to In Review for fresh QA; do not use it for unresolved blocking findings or changed contracts.
 - Treat `runner` as internal/debug-only. Users call `loopctl start`, not `loopctl runner`.
 
 Use `--repo-path`, `--state-root`, `--env-file`, or explicit Linear IDs only as overrides. When invoked outside the target repository, change into it first or use an explicit override. If `LOOPCTL_STATE_ROOT` is set, treat it as an explicit selection.

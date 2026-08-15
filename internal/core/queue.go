@@ -323,6 +323,9 @@ func (s *State) moveLocked(id, to, actor, note string, patch map[string]any, int
 		raw[k] = v
 	}
 	delete(raw, "status")
+	if linearCommentNeeded(from, to, actor, note) && strings.TrimSpace(note) == "" {
+		note = linearDefaultTransitionNote(from, to)
+	}
 	history, _ := raw["history"].([]any)
 	history = append(history, map[string]any{"at": Now(), "from": from, "to": to, "by": actor, "note": note})
 	raw["history"] = history
@@ -330,18 +333,18 @@ func (s *State) moveLocked(id, to, actor, note string, patch map[string]any, int
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err := DecodeCard(encoded, &s.Config); err != nil {
+	_, updatedCard, err := DecodeCard(encoded, &s.Config)
+	if err != nil {
 		return nil, err
 	}
 	if err := s.publish(card.ID, from, to, encoded, "move", actor); err != nil {
 		return nil, err
 	}
-	// A sync transition mirrors facts read from Linear into local runtime only;
-	// it must never write the remote board back based on that same observation.
-	if !strings.HasPrefix(actor, "system/sync") && !strings.HasPrefix(actor, "system/linear") {
-		if err := s.enqueueLinear(card, from, to); err != nil {
-			return raw, E(7, "move committed but Linear outbox failed: %v", err)
-		}
+	// A sync transition must not echo the observed state back to Linear, but it
+	// still sends attention labels and diagnostic comments when local recovery
+	// needs a human decision.
+	if err := s.enqueueLinear(updatedCard, from, to, actor, note); err != nil {
+		return raw, E(7, "move committed but Linear outbox failed: %v", err)
 	}
 	if err := s.appendJournal(roleFromActor(actor), id, from, to, actor, note); err != nil {
 		return raw, E(7, "move committed but journal failed: %v", err)

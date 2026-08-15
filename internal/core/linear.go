@@ -183,6 +183,68 @@ func (c *linearClient) removeLabel(ctx context.Context, issueID, labelID string)
 	}
 	return nil
 }
+
+func (c *linearClient) hasComment(ctx context.Context, issueID, marker string) (bool, error) {
+	const q = `query LoopIssueComments($id: String!, $after: String) { issue(id: $id) { comments(first: 100, after: $after) { nodes { body } pageInfo { hasNextPage endCursor } } } }`
+	var after any
+	for {
+		var data struct {
+			Issue *struct {
+				Comments struct {
+					Nodes    []struct{ Body string }
+					PageInfo struct {
+						HasNextPage bool
+						EndCursor   string
+					}
+				}
+			}
+		}
+		if err := c.graphql(ctx, q, map[string]any{"id": issueID, "after": after}, &data); err != nil {
+			return false, err
+		}
+		if data.Issue == nil {
+			return false, fmt.Errorf("Linear issue %q not found", issueID)
+		}
+		for _, comment := range data.Issue.Comments.Nodes {
+			if strings.Contains(comment.Body, marker) {
+				return true, nil
+			}
+		}
+		if !data.Issue.Comments.PageInfo.HasNextPage {
+			return false, nil
+		}
+		if data.Issue.Comments.PageInfo.EndCursor == "" {
+			return false, fmt.Errorf("Linear comment pagination cursor missing")
+		}
+		after = data.Issue.Comments.PageInfo.EndCursor
+	}
+}
+
+func (c *linearClient) addComment(ctx context.Context, issueID, body string) error {
+	if marker := linearCommentMarker(body); marker != "" {
+		seen, err := c.hasComment(ctx, issueID, marker)
+		if err != nil {
+			return err
+		}
+		if seen {
+			return nil
+		}
+	}
+	const q = `mutation AddLoopComment($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id } } }`
+	var data struct {
+		CommentCreate struct {
+			Success bool
+			Comment struct{ ID string }
+		}
+	}
+	if err := c.graphql(ctx, q, map[string]any{"input": map[string]any{"issueId": issueID, "body": body}}, &data); err != nil {
+		return err
+	}
+	if !data.CommentCreate.Success || data.CommentCreate.Comment.ID == "" {
+		return fmt.Errorf("Linear commentCreate failed")
+	}
+	return nil
+}
 func (c *linearClient) findIssue(ctx context.Context, id string) (map[string]any, bool, error) {
 	const q = `query GroomOperation($id: String!) { issue(id: $id) { id identifier title url state { name } } }`
 	var data struct {
@@ -323,6 +385,7 @@ type linearAction struct {
 	StateID   string `json:"state_id,omitempty"`
 	StateName string `json:"state_name,omitempty"`
 	Kind      string `json:"kind"`
+	Body      string `json:"body,omitempty"`
 }
 
 func (s *State) loadLinearRuntime() (linearRuntime, error) {
@@ -361,7 +424,11 @@ func (s *State) updateLinearRuntime(fn func(*linearRuntime)) error {
 	return s.saveLinearRuntime(r)
 }
 func actionKey(a linearAction) string {
-	return a.Kind + "|" + a.IssueID + "|" + a.StateID + "|" + a.StateName
+	key := a.Kind + "|" + a.IssueID + "|" + a.StateID + "|" + a.StateName
+	if a.Kind == "comment" {
+		key += "|" + Hash([]byte(a.Body))
+	}
+	return key
 }
 
 func (s *State) flushLinearOutbox(ctx context.Context, client *linearClient) (int, error) {
@@ -394,6 +461,8 @@ func (s *State) flushLinearOutbox(ctx context.Context, client *linearClient) (in
 			if actionErr == nil {
 				actionErr = client.removeLabel(ctx, a.IssueID, labelID)
 			}
+		case "comment":
+			actionErr = client.addComment(ctx, a.IssueID, a.Body)
 		}
 		if actionErr != nil {
 			pending = append(pending, a)
@@ -601,6 +670,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 			if labelID, labelErr := s.linearLabelID(ctx, client, s.Config.Linear.NeedsAttentionLabel); labelErr != nil || client.addLabel(ctx, issue.ID, labelID) != nil {
 				runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "attention"})
 			}
+			runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "comment", Body: linearImportAttentionComment(issue, e.Error())})
 			continue
 		}
 		raw, c, e := DecodeCard(data, &s.Config)
@@ -609,6 +679,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 			if labelID, labelErr := s.linearLabelID(ctx, client, s.Config.Linear.NeedsAttentionLabel); labelErr != nil || client.addLabel(ctx, issue.ID, labelID) != nil {
 				runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "attention"})
 			}
+			runtime.Outbox = appendLinearAction(runtime.Outbox, linearAction{IssueID: issue.ID, Kind: "comment", Body: linearImportAttentionComment(issue, e.Error())})
 			continue
 		}
 		if _, _, locErr := s.Locate(c.ID); locErr == nil {
@@ -941,10 +1012,11 @@ func (s *State) syncContractChange(id string, patch map[string]any, revision str
 	return result, err
 }
 
-func (s *State) enqueueLinear(card *Card, from, status string) error {
+func (s *State) enqueueLinear(card *Card, from, status, actor, note string) error {
 	if !s.Config.Linear.Enabled || card.LinearIssueUUID == "" {
 		return nil
 	}
+	mirrorState := !strings.HasPrefix(actor, "system/sync") && !strings.HasPrefix(actor, "system/linear")
 	kind, stateName := "state", ""
 	switch status {
 	case "todo", "blocked":
@@ -960,26 +1032,37 @@ func (s *State) enqueueLinear(card *Card, from, status string) error {
 	case "needs_attention":
 		kind = "attention"
 	default:
-		return nil
+		kind = ""
 	}
-	candidate := linearAction{IssueID: card.LinearIssueUUID, StateName: stateName, Kind: kind}
+	commentNeeded := linearCommentNeeded(from, status, actor, note)
+	comment := linearAction{}
+	if commentNeeded {
+		comment = linearAction{IssueID: card.LinearIssueUUID, Kind: "comment", Body: linearTransitionComment(card, from, status, actor, note)}
+	}
 	return s.updateLinearRuntime(func(runtime *linearRuntime) {
-		if candidate.Kind == "state" {
-			kept := runtime.Outbox[:0]
-			for _, a := range runtime.Outbox {
-				if a.IssueID == candidate.IssueID && a.Kind == "state" {
-					continue
+		if kind != "" && (mirrorState || kind == "attention") {
+			candidate := linearAction{IssueID: card.LinearIssueUUID, StateName: stateName, Kind: kind}
+			if candidate.Kind == "state" {
+				kept := runtime.Outbox[:0]
+				for _, a := range runtime.Outbox {
+					if a.IssueID == candidate.IssueID && a.Kind == "state" {
+						continue
+					}
+					kept = append(kept, a)
 				}
-				kept = append(kept, a)
+				runtime.Outbox = kept
 			}
-			runtime.Outbox = kept
-		}
-		for _, a := range runtime.Outbox {
-			if actionKey(a) == actionKey(candidate) {
-				return
+			present := false
+			for _, a := range runtime.Outbox {
+				if actionKey(a) == actionKey(candidate) {
+					present = true
+					break
+				}
+			}
+			if !present {
+				runtime.Outbox = append(runtime.Outbox, candidate)
 			}
 		}
-		runtime.Outbox = append(runtime.Outbox, candidate)
 		if from == "needs_attention" && status != "needs_attention" {
 			remove := linearAction{IssueID: card.LinearIssueUUID, Kind: "attention-remove"}
 			present := false
@@ -990,6 +1073,18 @@ func (s *State) enqueueLinear(card *Card, from, status string) error {
 			}
 			if !present {
 				runtime.Outbox = append(runtime.Outbox, remove)
+			}
+		}
+		if commentNeeded {
+			present := false
+			for _, a := range runtime.Outbox {
+				if actionKey(a) == actionKey(comment) {
+					present = true
+					break
+				}
+			}
+			if !present {
+				runtime.Outbox = append(runtime.Outbox, comment)
 			}
 		}
 	})

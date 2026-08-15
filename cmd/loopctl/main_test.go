@@ -47,6 +47,15 @@ func TestLoadStrictEnvRejectsUnsafe(t *testing.T) {
 		}
 	}
 }
+
+func TestCommandNeedsLinearTokenForMutatingCommands(t *testing.T) {
+	for _, command := range []string{"resolve", "qa-retry", "qa-merge", "sync-done", "reconcile"} {
+		if !commandNeedsLinearToken(command) {
+			t.Fatalf("commandNeedsLinearToken(%q)=false", command)
+		}
+	}
+}
+
 func TestExtractOptionAnywhere(t *testing.T) {
 	args, value := extractOption([]string{"card-1", "--to", "in_review", "--state-root", "/state", "--by", "dev/w"}, "--state-root")
 	if value != "/state" || len(args) != 5 {

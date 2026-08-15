@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,7 +22,7 @@ case "$1 $2" in
     else
       printf '%s\n' '{"number":12,"state":"OPEN","baseRefName":"dev","headRefName":"loop/a","headRefOid":"head123","mergeCommit":null,"url":"https://github.test/pr/12"}'
     fi ;;
-  "pr checks") exit 0 ;;
+	"pr checks") for arg do [ "$arg" = "--required" ] && exit 3; done; printf '%s\n' '[{"name":"CI / test","state":"SUCCESS","bucket":"pass","link":"https://github.test/checks/1"}]' ;;
   "pr merge") touch "` + state + `" ;;
   *) exit 2 ;;
 esac
@@ -50,6 +51,10 @@ esac
 	if receipt["merge_sha"] != "merge123" {
 		t.Fatalf("receipt=%v", receipt)
 	}
+	checks, ok := receipt["checks"].([]string)
+	if !ok || len(checks) != 1 || checks[0] != "CI / test" {
+		t.Fatalf("receipt checks=%v", receipt["checks"])
+	}
 	result, err := s.SyncDone(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +65,48 @@ esac
 	status, _, err := s.Locate("a")
 	if err != nil || status != "done" {
 		t.Fatalf("status=%s err=%v", status, err)
+	}
+}
+
+func TestQAMergeReportsTheNameOfAFailingCheck(t *testing.T) {
+	s := testState(t)
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	merged := filepath.Join(dir, "merged")
+	script := `#!/bin/sh
+case "$1 $2" in
+  "pr view") printf '%s\n' '{"number":12,"state":"OPEN","baseRefName":"dev","headRefName":"loop/a","headRefOid":"head123","mergeCommit":null,"url":"https://github.test/pr/12"}' ;;
+  "pr checks") printf '%s\n' '[{"name":"CI / test","state":"SUCCESS","bucket":"pass"},{"name":"Lint / required","state":"FAILURE","bucket":"fail"}]' ;;
+  "pr merge") touch "` + merged + `" ;;
+  *) exit 2 ;;
+esac
+`
+	if err := os.WriteFile(gh, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	addTestCard(t, s, "failing-check", []string{"check.go"})
+	if _, err := s.Claim("dev", "d"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Move("failing-check", "in_review", "dev/d", "PR opened", map[string]any{"pr": 12}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim("qa", "q"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PatchInternal("failing-check", map[string]any{"tested_head_sha": "head123", "qa_evidence": []string{"acceptance passed"}}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	err := func() error {
+		_, err := s.QAMerge(context.Background(), "failing-check", "qa/q")
+		return err
+	}()
+	if ExitCode(err) != 2 || !strings.Contains(err.Error(), "Lint / required") {
+		t.Fatalf("exit=%d err=%v", ExitCode(err), err)
+	}
+	if _, statErr := os.Stat(merged); statErr == nil {
+		t.Fatal("failing check must prevent merge")
 	}
 }
 

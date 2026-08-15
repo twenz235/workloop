@@ -49,6 +49,8 @@ func run(args []string) error {
 		return stateCmd(cmd, args, findingsCmd)
 	case "resolve":
 		return stateCmd(cmd, args, resolveCmd)
+	case "qa-retry":
+		return stateCmd(cmd, args, qaRetryCmd)
 	case "heartbeat":
 		return stateCmd(cmd, args, heartbeatCmd)
 	case "peer-check":
@@ -120,7 +122,7 @@ func stateCmd(cmd string, args []string, h handler) error {
 
 func linearMutationCommand(cmd string) bool {
 	switch cmd {
-	case "move", "findings", "resolve", "qa-merge", "sync-done", "reconcile":
+	case "move", "findings", "resolve", "qa-retry", "qa-merge", "sync-done", "reconcile":
 		return true
 	default:
 		return false
@@ -282,7 +284,7 @@ func defaultEnvFile() string {
 }
 
 func commandNeedsLinearToken(cmd string) bool {
-	return cmd == "sync" || cmd == "groom"
+	return cmd == "sync" || cmd == "groom" || linearMutationCommand(cmd)
 }
 
 func ensureStateIgnored(repo, stateRoot string) error {
@@ -458,6 +460,27 @@ func resolveCmd(s *core.State, args []string) error {
 		return core.E(2, "card id required")
 	}
 	v, err := s.Resolve(context.Background(), id, *to, *by, *note, *closePR)
+	if err != nil {
+		return err
+	}
+	return output(v)
+}
+
+func qaRetryCmd(s *core.State, args []string) error {
+	id, args := leadingID(args)
+	fs := flag.NewFlagSet("qa-retry", flag.ContinueOnError)
+	by := fs.String("by", "", "human identity")
+	note := fs.String("note", "", "reason and remediation note")
+	if err := fs.Parse(args); err != nil {
+		return core.E(2, "%v", err)
+	}
+	if id == "" && fs.NArg() == 1 {
+		id = fs.Arg(0)
+	}
+	if id == "" {
+		return core.E(2, "card id required")
+	}
+	v, err := s.RetryQA(id, *by, *note)
 	if err != nil {
 		return err
 	}
@@ -823,6 +846,7 @@ Commands:
   move       apply an allowed role transition
   findings   record QA findings
   resolve    resolve attention/cancellation as a human
+  qa-retry   return an attention card to In Review for fresh QA
   reconcile  recover stale claims
   sync       import approved Linear backlog issues
   qa-merge   merge a QA-verified PR into dev

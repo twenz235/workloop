@@ -25,6 +25,7 @@ Output is JSON except for help text and the long-running supervisor. Commands ma
 | `move` | advanced | Apply a role-authorized execution-phase transition. |
 | `findings` | internal | Record structured QA findings. |
 | `resolve` | user | Resolve a card requiring human attention or cancellation. |
+| `qa-retry` | user | Return an attention card to In Review for a fresh QA attempt. |
 | `reconcile` | recovery | Recover stale Dev or QA claims. |
 | `sync` | user | Import approved Linear backlog issues. |
 | `qa-merge` | internal | Merge a QA-verified PR into `dev`. |
@@ -271,6 +272,24 @@ loopctl resolve eng-123 --to rework --by human/alice \
   --note "Apply the newly approved acceptance criteria"
 ```
 
+### `loopctl qa-retry`
+
+```text
+loopctl qa-retry CARD_ID --by human/ID --note TEXT
+```
+
+Returns a `needs_attention` card with an existing PR to `In Review` so QA can
+claim it again. The human note is required and is mirrored to Linear as an
+audit comment. The command refuses changed contracts and unresolved blocking
+QA findings; use `resolve --to rework` when Dev must fix the PR first. Previous
+QA evidence is cleared, while stale facts remain until the next QA run proves
+the current head and base again.
+
+```bash
+loopctl qa-retry eng-123 --by human/alice \
+  --note "The provider outage is resolved; rerun QA on the current PR"
+```
+
 ### `loopctl reconcile`
 
 ```text
@@ -363,7 +382,11 @@ Reports the other role's liveness from durable heartbeat data. This is primarily
 loopctl qa-merge CARD_ID --by QA_WORKER
 ```
 
-Merges the exact QA-verified PR into `dev` only after Workloop rechecks the tested head SHA, base branch, and required GitHub conditions. The supervisor normally calls it.
+Merges the exact QA-verified PR into `dev` only after Workloop rechecks the
+tested head SHA, base branch, and every check returned by
+`gh pr checks --json name,state,bucket,link`. Each reported check must have
+`bucket: pass`; the passed check names are stored in the durable merge receipt.
+The supervisor normally calls it.
 
 ### `loopctl mark-stale`
 

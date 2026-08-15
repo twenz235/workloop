@@ -36,7 +36,7 @@ fi
 	ghScript := fmt.Sprintf(`#!/bin/sh
 case "$1 $2" in
  "pr view") if [ -f %q ]; then printf '{"number":12,"state":"MERGED","baseRefName":"dev","headRefName":"loop/e2e","headRefOid":"%s","mergeCommit":{"oid":"merge-e2e"},"url":"https://github.test/12"}'; else printf '{"number":12,"state":"OPEN","baseRefName":"dev","headRefName":"loop/e2e","headRefOid":"%s","mergeCommit":null,"url":"https://github.test/12"}'; fi ;;
- "pr checks") exit 0 ;;
+ "pr checks") printf '[{"name":"CI / test","state":"SUCCESS","bucket":"pass","link":"https://github.test/checks/1"}]\n' ;;
  "pr merge") touch %q ;;
  *) exit 2 ;;
 esac

@@ -503,9 +503,15 @@ sync ต้อง idempotent ด้วย `linear_issue_uuid` และ durable 
 - `cancelled`: terminal และ sync Linear Canceled. ถ้ามี open PR ต้องระบุ `--close-pr`; CLI ตรวจว่า PR เป็นของ card และ base=`dev` ก่อนปิด แล้วจึง release reservation; worktree มีสิทธิ์ถูกลบใน `gc-worktrees`
 - ห้าม resolve ไป `done`; ถ้าเงื่อนไขไม่ชัดให้คง `needs_attention`
 
+#### `loopctl qa-retry ID --by human/ID --note TEXT`
+ส่งการ์ดจาก `needs_attention` กลับ `In Review` เพื่อให้ QA claim และตรวจใหม่:
+- ต้องมี PR เดิม, contract ต้องไม่เปลี่ยน และห้ามมี blocking finding ค้างอยู่
+- note และ human identity required; ล้าง `qa_evidence` เก่าแต่คงข้อมูล `stale` จน QA รอบใหม่พิสูจน์ head/base
+- sync Linear เป็น `In Review`, เอา `loop:needs-attention` ออก และเขียนคอมเมนต์ audit ครบ Why/Needed/Fix/Recommendation
+
 #### `loopctl qa-merge ID --by qa/WORKER`
 happy path หลัง QA ผ่าน:
-- ตรวจ card อยู่ `claimed-qa`, base เท่ากับ `dev`, PR head SHA ตรง `tested_head_sha` ที่ QA ตรวจ, ไม่ stale/spec_changed, acceptance evidence ครบ, required CI checks ผ่าน และไม่มี blocking finding
+- ตรวจ card อยู่ `claimed-qa`, base เท่ากับ `dev`, PR head SHA ตรง `tested_head_sha` ที่ QA ตรวจ, ไม่ stale/spec_changed, acceptance evidence ครบ และทุก check ที่ `gh pr checks --json name,state,bucket,link` คืนมาต้อง `bucket=pass`; ชื่อ checks ที่ผ่านเก็บใน merge receipt และต้องไม่มี blocking finding
 - merge ด้วย merge commit เท่านั้น; ห้าม squash/rebase merge
 - ปฏิเสธ base `main`, `master`, release/prod/staging หรือชื่ออื่นที่ไม่ใช่ `dev` แบบ hard fail
 - merge สำเร็จแล้วเขียน durable receipt ก่อน sync Linear; retry ต้องตรวจ merged commit เดิมและห้าม merge ซ้ำ
@@ -610,6 +616,7 @@ claimed-dev    → in_review | needs_attention | todo(คืน) | blocked   [de
 in_review      → claimed-qa                     [qa]
 claimed-qa     → rework | in_review(stale) | needs_attention | done(qa-merge + sync-done) [qa]
 needs_attention→ todo | rework | cancelled      [resolve โดยคนเท่านั้น]
+needs_attention→ in_review                    [qa-retry โดยคนเท่านั้น]
 blocked        → todo                           [ระบบอัตโนมัติเมื่อ dependency done]
 todo|blocked   → cancelled                      [resolve หรือ sync เมื่อคนยกเลิกใน Linear]
 ```

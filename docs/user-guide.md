@@ -183,6 +183,18 @@ loopctl resolve eng-123 --to cancelled --by human/alice \
 
 Never edit files under `.loopctl` by hand and never move a card directly to `done`. Only a verified QA merge followed by `sync-done` can finish a card.
 
+When automation is paused without a code finding—for example, after a
+temporary QA provider failure—a human can send the existing PR back to QA:
+
+```bash
+loopctl qa-retry eng-123 --by human/alice \
+  --note "The provider outage is resolved; rerun QA"
+```
+
+This returns the card to In Review, clears old QA evidence, and leaves a
+Linear comment explaining the decision. Blocking findings or a changed
+contract must go through `resolve --to rework` or contract re-approval first.
+
 ## 8. Stop, restart, and recover
 
 Stop a foreground supervisor safely:
