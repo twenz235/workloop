@@ -246,11 +246,12 @@ func (c *linearClient) addComment(ctx context.Context, issueID, body string) err
 	return nil
 }
 func (c *linearClient) findIssue(ctx context.Context, id string) (map[string]any, bool, error) {
-	const q = `query GroomOperation($id: String!) { issue(id: $id) { id identifier title url state { name } } }`
+	const q = `query GroomOperation($id: String!) { issue(id: $id) { id identifier title url state { name } labels { nodes { name } } } }`
 	var data struct {
 		Issue *struct {
 			ID, Identifier, Title, URL string
 			State                      struct{ Name string }
+			Labels                     struct{ Nodes []struct{ Name string } }
 		}
 	}
 	if err := c.graphql(ctx, q, map[string]any{"id": id}, &data); err != nil {
@@ -259,7 +260,61 @@ func (c *linearClient) findIssue(ctx context.Context, id string) (map[string]any
 	if data.Issue == nil || data.Issue.ID == "" {
 		return nil, false, nil
 	}
-	return map[string]any{"id": data.Issue.ID, "identifier": data.Issue.Identifier, "title": data.Issue.Title, "url": data.Issue.URL, "status": data.Issue.State.Name}, true, nil
+	labels := []string{}
+	for _, label := range data.Issue.Labels.Nodes {
+		labels = append(labels, label.Name)
+	}
+	return map[string]any{"id": data.Issue.ID, "identifier": data.Issue.Identifier, "title": data.Issue.Title, "url": data.Issue.URL, "status": data.Issue.State.Name, "labels": labels}, true, nil
+}
+
+func (s *State) ensureGroomReadyLabel(ctx context.Context, client *linearClient, issue map[string]any, readyLabelID *string) error {
+	labels := stringSlice(issue["labels"])
+	if containsString(labels, s.Config.Linear.ReadyLabel) {
+		return nil
+	}
+	if strings.TrimSpace(*readyLabelID) == "" {
+		labelID, err := s.linearLabelID(ctx, client, s.Config.Linear.ReadyLabel)
+		if err != nil {
+			return E(8, "Linear ready label lookup failed: %v", err)
+		}
+		*readyLabelID = labelID
+	}
+	issueID := strings.TrimSpace(fmt.Sprint(issue["id"]))
+	if issueID == "" || issueID == "<nil>" {
+		return E(8, "Linear issue identity is missing while restoring %s", s.Config.Linear.ReadyLabel)
+	}
+	if err := client.addLabel(ctx, issueID, *readyLabelID); err != nil {
+		return E(8, "Linear ready label restore failed: %v", err)
+	}
+	issue["labels"] = append(labels, s.Config.Linear.ReadyLabel)
+	return nil
+}
+
+func (s *State) promoteApprovedLinearIssue(ctx context.Context, client *linearClient, issue *linearIssue, readyLabelID *string) (bool, error) {
+	if containsString(issue.Labels, s.Config.Linear.ReadyLabel) || containsString(issue.Labels, s.Config.Linear.NeedsAttentionLabel) {
+		return false, nil
+	}
+	if issue.StateName == "Canceled" || issue.StateName == "Cancelled" || issue.StateName == "Duplicate" || issue.StateName == s.Config.Linear.StatusMap["done"] {
+		return false, nil
+	}
+	// parseLoopCard validates the complete Definition of Ready, including the
+	// approval audit fields. A plan parent has no loop-card and therefore can
+	// never be promoted by this repair path.
+	if _, err := parseLoopCard(*issue, &s.Config); err != nil {
+		return false, nil
+	}
+	if strings.TrimSpace(*readyLabelID) == "" {
+		labelID, err := s.linearLabelID(ctx, client, s.Config.Linear.ReadyLabel)
+		if err != nil {
+			return false, E(8, "Linear ready label lookup failed: %v", err)
+		}
+		*readyLabelID = labelID
+	}
+	if err := client.addLabel(ctx, issue.ID, *readyLabelID); err != nil {
+		return false, E(8, "Linear ready label restore failed for %s: %v", issue.Identifier, err)
+	}
+	issue.Labels = append(issue.Labels, s.Config.Linear.ReadyLabel)
+	return true, nil
 }
 
 func (c *linearClient) reusableParent(ctx context.Context, id string) (reusableLinearParent, bool, error) {
@@ -552,11 +607,13 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 	updated := []string{}
 	attention := []string{}
 	cancelled := []string{}
+	autoReady := []string{}
 	rejected := map[string]string{}
 	todoState, err := s.linearStateID(ctx, client, s.Config.Linear.StatusMap["todo"])
 	if err != nil {
 		return nil, E(8, "Linear status lookup failed: %v", err)
 	}
+	readyLabelID := ""
 	for _, issue := range issues {
 		cards, cardsErr := s.AllCards()
 		if cardsErr != nil {
@@ -574,6 +631,15 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 			}
 		}
 		if existing != nil {
+			if existing.Status != "done" {
+				promoted, promoteErr := s.promoteApprovedLinearIssue(ctx, client, &issue, &readyLabelID)
+				if promoteErr != nil {
+					return nil, promoteErr
+				}
+				if promoted {
+					autoReady = appendUniqueIdentifier(autoReady, issue.Identifier)
+				}
+			}
 			metadataChanged, metadataErr := s.syncLinearMetadata(existing.Card.ID, issue)
 			if metadataErr != nil {
 				return nil, metadataErr
@@ -658,6 +724,13 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 				}
 			}
 			continue
+		}
+		promoted, promoteErr := s.promoteApprovedLinearIssue(ctx, client, &issue, &readyLabelID)
+		if promoteErr != nil {
+			return nil, promoteErr
+		}
+		if promoted {
+			autoReady = appendUniqueIdentifier(autoReady, issue.Identifier)
 		}
 		ready := containsString(issue.Labels, s.Config.Linear.ReadyLabel)
 		isCancelled := issue.StateName == "Canceled" || issue.StateName == "Cancelled" || issue.StateName == "Duplicate"
@@ -765,7 +838,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 			return nil, err
 		}
 	}
-	return map[string]any{"imported": imported, "updated": updated, "needs_attention": attention, "cancelled": cancelled, "rejected": rejected, "pending": len(final.Outbox)}, nil
+	return map[string]any{"imported": imported, "updated": updated, "auto_ready": autoReady, "needs_attention": attention, "cancelled": cancelled, "rejected": rejected, "pending": len(final.Outbox)}, nil
 }
 
 func (s *State) syncLinearParent(id, parentID, revision string) (bool, error) {
@@ -1178,8 +1251,16 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 			return nil, E(2, "Linear parent %s does not exist", parentID)
 		}
 	}
+	readyLabelID := ""
 	if existing, ok, e := client.findIssue(ctx, opID); e == nil && ok {
-		existing["labels"] = []string{s.Config.Linear.ReadyLabel, "type:" + workType}
+		if err := s.ensureGroomReadyLabel(ctx, client, existing, &readyLabelID); err != nil {
+			return nil, err
+		}
+		labels := stringSlice(existing["labels"])
+		if !containsString(labels, "type:"+workType) {
+			labels = append(labels, "type:"+workType)
+		}
+		existing["labels"] = linearLabels(labels)
 		return existing, nil
 	}
 	projects, err := s.LinearProjects(ctx)
@@ -1200,7 +1281,7 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 	if err != nil {
 		return nil, E(8, "Linear backlog lookup failed: %v", err)
 	}
-	readyLabelID, err := s.linearLabelID(ctx, client, s.Config.Linear.ReadyLabel)
+	readyLabelID, err = s.linearLabelID(ctx, client, s.Config.Linear.ReadyLabel)
 	if err != nil {
 		return nil, E(8, "Linear label lookup failed: %v", err)
 	}
@@ -1224,7 +1305,14 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 	}
 	if err := client.graphql(ctx, q, map[string]any{"input": input}, &response); err != nil {
 		if existing, ok, _ := client.findIssue(ctx, opID); ok {
-			existing["labels"] = []string{s.Config.Linear.ReadyLabel, "type:" + workType}
+			if readyErr := s.ensureGroomReadyLabel(ctx, client, existing, &readyLabelID); readyErr != nil {
+				return nil, readyErr
+			}
+			labels := stringSlice(existing["labels"])
+			if !containsString(labels, "type:"+workType) {
+				labels = append(labels, "type:"+workType)
+			}
+			existing["labels"] = linearLabels(labels)
 			return existing, nil
 		}
 		return nil, E(8, "Linear create failed: %v", err)

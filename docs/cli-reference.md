@@ -90,7 +90,7 @@ loopctl groom --plan-file /tmp/approved-plan.json --approved-by alice
 loopctl sync
 ```
 
-Imports eligible `loop:ready` issues from the configured Linear Backlog, creates idempotent internal runtime cards, stores the Linear state and labels used by the board view, and moves accepted issues to Todo. It also refreshes those snapshots for cards already known and retries pending outbound state/label changes. It automatically reads `LINEAR_API_TOKEN` from `~/.env`.
+Imports eligible `loop:ready` issues from the configured Linear Backlog, creates idempotent internal runtime cards, stores the Linear state and labels used by the board view, and moves accepted issues to Todo. For a non-terminal issue with a valid approved `loop-card` but no `loop:ready`, it restores the label before importing; parent plan issues without an executable `loop-card` are not promoted. It also refreshes those snapshots for cards already known and retries pending outbound state/label changes. It automatically reads `LINEAR_API_TOKEN` from `~/.env`.
 
 ```bash
 loopctl sync

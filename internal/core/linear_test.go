@@ -94,6 +94,57 @@ func TestLinearSyncImportsReadyIssueIdempotently(t *testing.T) {
 	}
 }
 
+func TestLinearSyncRestoresReadyFromApprovedCard(t *testing.T) {
+	s := testState(t)
+	t.Setenv("LINEAR_API_TOKEN", "x")
+	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	parentID := "11111111-1111-4111-8111-111111111111"
+	readyAdds := 0
+	stateMoves := 0
+	oldClient := defaultLinearHTTPClient
+	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		query := string(body)
+		var response string
+		switch {
+		case strings.Contains(query, "TeamStates"):
+			response = `{"data":{"team":{"states":{"nodes":[{"id":"todo-id","name":"Todo"}]}}}}`
+		case strings.Contains(query, "TeamLabels"):
+			response = `{"data":{"team":{"labels":{"nodes":[{"id":"ready-id","name":"loop:ready"}]}}}}`
+		case strings.Contains(query, "AddLoopLabel"):
+			readyAdds++
+			response = `{"data":{"issueAddLabel":{"success":true}}}`
+		case strings.Contains(query, "MoveLoopIssue"):
+			stateMoves++
+			response = `{"data":{"issueUpdate":{"success":true}}}`
+		default:
+			description := fmt.Sprintf("```loop-card\n{\"problem\":\"p\",\"desired_outcome\":\"o\",\"out_of_scope\":[\"x\"],\"repo\":%q,\"repo_path\":%q,\"base\":\"dev\",\"tier\":\"L1\",\"touches\":[\"a.go\"],\"acceptance\":[\"works\"],\"verification\":[\"test\"],\"depends_on\":[],\"risk\":{\"level\":\"low\"},\"rollback_notes\":\"revert\",\"approved_at\":\"2026-08-15T00:00:00Z\",\"approved_by\":\"user-1\"}\n```", s.Config.Repo, s.Config.RepoPath)
+			response = fmt.Sprintf(`{"data":{"team":{"issues":{"nodes":[{"id":"uuid-1","identifier":"FLO-1","title":"Approved child","description":%q,"url":"https://linear.test/1","updatedAt":"2026-08-15T00:00:00Z","priority":1,"state":{"name":"Backlog"},"project":{"id":"project-1","name":"Acme"},"parent":{"id":%q},"labels":{"nodes":[{"name":"type:feature"}]}}]}}}}`, description, parentID)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{}}, nil
+	})}
+	t.Cleanup(func() { defaultLinearHTTPClient = oldClient })
+
+	result, err := s.Sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	autoReady, ok := result["auto_ready"].([]string)
+	if !ok || len(autoReady) != 1 || autoReady[0] != "FLO-1" {
+		t.Fatalf("auto_ready=%v result=%v", result["auto_ready"], result)
+	}
+	if imported := result["imported"].([]string); len(imported) != 1 || imported[0] != "FLO-1" {
+		t.Fatalf("imported=%v", imported)
+	}
+	if readyAdds != 1 || stateMoves != 1 {
+		t.Fatalf("readyAdds=%d stateMoves=%d", readyAdds, stateMoves)
+	}
+	status, _, card, err := s.ReadCard("flo-1")
+	if err != nil || status != "todo" || !containsString(card.LinearLabels, "loop:ready") {
+		t.Fatalf("status=%q labels=%v err=%v", status, card.LinearLabels, err)
+	}
+}
+
 func TestLinearFailureReturnsEight(t *testing.T) {
 	s := testState(t)
 	t.Setenv("LINEAR_API_TOKEN", "x")
@@ -568,6 +619,7 @@ func TestGroomPlanCreatesParentAndOrderedSubIssues(t *testing.T) {
 	creates := []map[string]any{}
 	created := map[string]map[string]any{}
 	failedAPIOnce := false
+	readyRestores := 0
 	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(r.Body)
 		var request struct {
@@ -580,7 +632,7 @@ func TestGroomPlanCreatesParentAndOrderedSubIssues(t *testing.T) {
 		case strings.Contains(request.Query, "GroomOperation"):
 			id := fmt.Sprint(request.Variables["id"])
 			if existing := created[id]; existing != nil {
-				response = fmt.Sprintf(`{"data":{"issue":{"id":%q,"identifier":"FLO-X","title":%q,"url":"https://linear.test/existing","state":{"name":"Backlog"}}}}`, id, existing["title"])
+				response = fmt.Sprintf(`{"data":{"issue":{"id":%q,"identifier":"FLO-X","title":%q,"url":"https://linear.test/existing","state":{"name":"Backlog"},"labels":{"nodes":[{"name":"type:feature"}]}}}}`, id, existing["title"])
 			} else {
 				response = `{"data":{"issue":null}}`
 			}
@@ -588,6 +640,9 @@ func TestGroomPlanCreatesParentAndOrderedSubIssues(t *testing.T) {
 			response = `{"data":{"team":{"projects":{"nodes":[{"id":"project-1","name":"Acme"}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`
 		case strings.Contains(request.Query, "TeamLabels"):
 			response = `{"data":{"team":{"labels":{"nodes":[{"id":"ready-id","name":"loop:ready"},{"id":"feature-id","name":"type:feature"}]}}}}`
+		case strings.Contains(request.Query, "AddLoopLabel"):
+			readyRestores++
+			response = `{"data":{"issueAddLabel":{"success":true}}}`
 		case strings.Contains(request.Query, "TeamStates"):
 			response = `{"data":{"team":{"states":{"nodes":[{"id":"backlog-id","name":"Backlog"}]}}}}`
 		case strings.Contains(request.Query, "CreateGroomParent"), strings.Contains(request.Query, "CreateGroomedIssue"):
@@ -634,6 +689,9 @@ func TestGroomPlanCreatesParentAndOrderedSubIssues(t *testing.T) {
 	}
 	if result["complete"] != true || len(creates) != 3 {
 		t.Fatalf("result=%v creates=%v", result, creates)
+	}
+	if readyRestores != 1 {
+		t.Fatalf("readyRestores=%d", readyRestores)
 	}
 	if fmt.Sprint(result["execution_waves"]) != "[[schema] [api]]" {
 		t.Fatalf("waves=%v", result["execution_waves"])
