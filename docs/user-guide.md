@@ -145,6 +145,12 @@ loopctl status --role qa
 loopctl doctor
 ```
 
+For a card that needs attention, inspect its `last_note` first. Runner
+diagnostics identify the failure phase, explain what evidence is missing, give
+the next fix, and point to the worker log under `journal/workers/` in the state
+root. Do not retry a vague or incomplete failure blindly; use `qa-retry` or
+`resolve` only after recording the cause and next owner.
+
 Filter cards by Linear state/label or identifier:
 
 ```bash

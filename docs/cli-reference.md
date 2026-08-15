@@ -161,6 +161,10 @@ loopctl list [--status STATUS] [--linear LINEAR_ID]
 Lists cards, optionally filtering by Linear state, Linear label, or Linear
 identifier. The `status` field is the latest Linear board snapshot; local
 execution phases are deliberately not returned as a second board.
+When a card has a transition note, `last_note` contains the latest reason.
+Runner failures use a structured diagnostic with a code, phase, cause, required
+evidence, fix, recommendation, and a worker log path relative to the state
+root; this is especially useful for `loop:needs-attention` cards.
 
 ```bash
 loopctl list

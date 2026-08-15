@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,7 @@ func TestRunnerPromptIncludesOriginDevBaseSyncContract(t *testing.T) {
 		BaseSyncNote: "worker must resolve the merge", HeadSHA: "head-sha",
 		Card: []byte(`{"id":"card-1","contract_hash":"hash"}`),
 	})
-	for _, marker := range []string{"origin/dev", "--no-tags", "--no-edit", "git pull", "base-sha", "rebase", "discard", "reset", "resolve", "head_sha"} {
+	for _, marker := range []string{"origin/dev", "--no-tags", "--no-edit", "git pull", "base-sha", "rebase", "discard", "reset", "resolve", "head_sha", "failed command", "next action"} {
 		if !strings.Contains(prompt, marker) {
 			t.Fatalf("prompt missing %q: %s", marker, prompt)
 		}
@@ -84,13 +85,40 @@ func TestResultSchemaTypesAndRequiresEveryProperty(t *testing.T) {
 
 func TestRunnerAcceptsNullableOptionalResultFields(t *testing.T) {
 	e := RunnerEnvelope{Version: 1, CardID: "card-null", Role: "qa", Attempt: 1}
-	result := []byte(`{"version":1,"card_id":"card-null","role":"qa","attempt":1,"outcome":"needs_attention","evidence":[],"branch":null,"pr":null,"head_sha":null,"error":"blocked"}`)
+	result := []byte(`{"version":1,"card_id":"card-null","role":"qa","attempt":1,"outcome":"needs_attention","evidence":[],"branch":null,"pr":null,"head_sha":null,"error":"acceptance command go test ./... failed: assertion output requires review"}`)
 	r, err := parseRunnerResult(result, e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.PR != nil || r.Branch != "" || r.HeadSHA != "" || r.Error != "blocked" {
+	if r.PR != nil || r.Branch != "" || r.HeadSHA != "" || !strings.Contains(r.Error, "go test ./...") {
 		t.Fatalf("result=%+v", r)
+	}
+}
+
+func TestRunnerRejectsVagueFailureReason(t *testing.T) {
+	e := RunnerEnvelope{Version: 1, CardID: "card-vague", Role: "qa", Attempt: 1}
+	_, err := parseRunnerResult([]byte(`{"version":1,"card_id":"card-vague","role":"qa","attempt":1,"outcome":"needs_attention","evidence":[],"branch":null,"pr":null,"base_sha":null,"head_sha":null,"error":"blocked"}`), e)
+	if ExitCode(err) != 11 || !strings.Contains(err.Error(), "too vague") {
+		t.Fatalf("exit=%d err=%v", ExitCode(err), err)
+	}
+}
+
+func TestRunnerDiagnosticIsActionableAndCarriesLogReference(t *testing.T) {
+	note := runnerFailureNoteWithLog("card-1", "dev", 2, "provider", errors.New("exit status 10"), "provider failed: invalid provider flag")
+	diagnostic, ok := parseRunnerDiagnostic(note)
+	if !ok {
+		t.Fatalf("note is not a runner diagnostic: %s", note)
+	}
+	if diagnostic.Code != "provider-failed" || diagnostic.Phase != "provider execution" {
+		t.Fatalf("diagnostic=%+v", diagnostic)
+	}
+	for _, value := range []string{diagnostic.Why, diagnostic.Needed, diagnostic.Fix, diagnostic.Recommendation, diagnostic.Log} {
+		if strings.TrimSpace(value) == "" {
+			t.Fatalf("diagnostic field is empty: %+v", diagnostic)
+		}
+	}
+	if !strings.Contains(diagnostic.Log, "journal/workers/card-1/2.dev.log") || !strings.Contains(diagnostic.Why, "invalid provider flag") {
+		t.Fatalf("diagnostic=%+v", diagnostic)
 	}
 }
 

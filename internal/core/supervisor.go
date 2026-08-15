@@ -22,6 +22,8 @@ type workerDone struct {
 	attempt      int
 	baseSHA      string
 	headSHA      string
+	stage        string
+	logOutput    string
 	result       *RunnerResult
 	err          error
 }
@@ -134,17 +136,26 @@ func (s *State) flushLinearBestEffort(ctx context.Context) {
 }
 
 func (s *State) launchWorker(ctx context.Context, executable, id, role string, done chan<- workerDone) {
+	attempt := 0
+	contractHash := ""
+	if _, _, _, card, readErr := s.readCardPath(id); readErr == nil {
+		attempt = card.Attempts + 1
+		contractHash = card.ContractHash
+	}
 	envelope, err := s.prepareEnvelope(ctx, id, role)
 	if err != nil {
-		done <- workerDone{cardID: id, role: role, err: err}
+		done <- workerDone{cardID: id, role: role, attempt: attempt, contractHash: contractHash, stage: "prepare", err: err}
 		return
 	}
+	attempt = envelope.Attempt
+	contractHash = envelope.ContractHash
 	b, _ := json.Marshal(envelope)
 	cmd := exec.Command(executable, "runner", "--provider", envelope.Provider, "--role", role)
 	cmd.Stdin = bytes.NewReader(b)
 	logDir := filepath.Dir(envelope.OutputPath)
 	_ = os.MkdirAll(logDir, 0700)
-	log, logErr := os.OpenFile(filepath.Join(logDir, fmt.Sprintf("%d.%s.log", envelope.Attempt, role)), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	logPath := filepath.Join(logDir, fmt.Sprintf("%d.%s.log", envelope.Attempt, role))
+	log, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if logErr == nil {
 		defer log.Close()
 		cmd.Stdout = log
@@ -159,10 +170,18 @@ func (s *State) launchWorker(ctx context.Context, executable, id, role string, d
 		_ = os.Remove(workerRecord)
 	}
 	var result RunnerResult
+	stage := "provider"
 	if readErr := readJSON(envelope.OutputPath, &result); readErr != nil && err == nil {
 		err = readErr
+		stage = "result-read"
 	}
-	done <- workerDone{cardID: id, role: role, contractHash: envelope.ContractHash, attempt: envelope.Attempt, baseSHA: envelope.BaseSHA, headSHA: envelope.HeadSHA, result: &result, err: err}
+	logOutput := ""
+	if err != nil {
+		if b, readErr := os.ReadFile(logPath); readErr == nil {
+			logOutput = safeError(string(b))
+		}
+	}
+	done <- workerDone{cardID: id, role: role, contractHash: contractHash, attempt: attempt, baseSHA: envelope.BaseSHA, headSHA: envelope.HeadSHA, stage: stage, logOutput: logOutput, result: &result, err: err}
 }
 
 func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnvelope, error) {
@@ -326,7 +345,7 @@ func (s *State) PatchInternal(id string, patch map[string]any, note string) (map
 
 func (s *State) finishWorker(ctx context.Context, d workerDone) {
 	if d.err != nil {
-		_, _ = s.withMoveInternal(d.cardID, "needs_attention", d.role+"/supervisor", "runner failed: "+safeError(d.err.Error()), nil)
+		_, _ = s.withMoveInternal(d.cardID, "needs_attention", d.role+"/supervisor", runnerFailureNoteWithLog(d.cardID, d.role, d.attempt, d.stage, d.err, d.logOutput), nil)
 		return
 	}
 	if d.result == nil {
@@ -340,7 +359,7 @@ func (s *State) finishWorker(ctx context.Context, d workerDone) {
 	if d.role == "qa" {
 		latestBaseSHA, baseErr := fetchOriginDev(ctx, s.Config.RepoPath)
 		if baseErr != nil {
-			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "qa/supervisor", "QA base freshness check failed: "+baseErr.Error(), nil)
+			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "qa/supervisor", runnerFailureNote(d.cardID, "qa", d.attempt, "qa-base-check", fmt.Errorf("QA base freshness check failed: %w", baseErr)), nil)
 			return
 		}
 		if current.BaseSHA == nil || *current.BaseSHA != d.baseSHA || latestBaseSHA != d.baseSHA || d.result.BaseSHA != latestBaseSHA || current.TestedHeadSHA == nil || *current.TestedHeadSHA != d.headSHA || d.result.HeadSHA != d.headSHA {
@@ -349,25 +368,25 @@ func (s *State) finishWorker(ctx context.Context, d workerDone) {
 		}
 	}
 	if d.result.Outcome == "needs_attention" {
-		_, _ = s.withMoveInternal(d.cardID, "needs_attention", d.role+"/supervisor", d.result.Error, nil)
+		_, _ = s.withMoveInternal(d.cardID, "needs_attention", d.role+"/supervisor", runnerResultNote(d.cardID, d.result), nil)
 		return
 	}
 	if d.result.Outcome == "retryable" {
 		if current.Attempts >= current.MaxAttempts {
-			_, _ = s.withMoveInternal(d.cardID, "needs_attention", d.role+"/supervisor", "maximum attempts reached", nil)
+			_, _ = s.withMoveInternal(d.cardID, "needs_attention", d.role+"/supervisor", runnerAttemptsExhaustedNote(d.cardID, d.role, d.attempt), nil)
 			return
 		}
 		to := "todo"
 		if d.role == "qa" {
 			to = "in_review"
 		}
-		_, _ = s.withMoveInternal(d.cardID, to, d.role+"/supervisor", d.result.Error, map[string]any{"claimed_at": nil, "claimed_by": nil})
+		_, _ = s.withMoveInternal(d.cardID, to, d.role+"/supervisor", runnerResultNote(d.cardID, d.result), map[string]any{"claimed_at": nil, "claimed_by": nil})
 		return
 	}
 	if d.role == "dev" {
 		n, err := prNumber(d.result.PR)
 		if err != nil {
-			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "dev/supervisor", "runner did not return a PR", nil)
+			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "dev/supervisor", runnerFailureNote(d.cardID, "dev", d.attempt, "result-validation", fmt.Errorf("runner did not return a PR: %w", err)), nil)
 			return
 		}
 		p, err := s.prView(ctx, n)
@@ -376,7 +395,7 @@ func (s *State) finishWorker(ctx context.Context, d workerDone) {
 			if err != nil {
 				note = err.Error()
 			}
-			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "dev/supervisor", note, nil)
+			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "dev/supervisor", runnerFailureNote(d.cardID, "dev", d.attempt, "result-validation", errors.New(note)), nil)
 			return
 		}
 		latestBaseSHA, gateErr := s.verifyDevReviewGate(ctx, d.cardID, current, d.result.BaseSHA, d.result.HeadSHA)

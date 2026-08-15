@@ -30,12 +30,16 @@ func (s *State) List(status, linear string) ([]map[string]any, error) {
 		if linear != "" && x.Card.LinearIssueUUID != linear && x.Card.LinearIssueID != linear {
 			continue
 		}
-		out = append(out, map[string]any{
+		item := map[string]any{
 			"id": x.Card.ID, "title": x.Card.Title, "status": boardStatus,
 			"linear_state": x.Card.LinearState, "linear_labels": x.Card.LinearLabels,
 			"priority": x.Card.Priority, "linear_url": x.Card.LinearURL, "pr": x.Card.PR,
 			"stale": x.Card.Stale, "base_sync_pending": x.Card.BaseSyncPending, "spec_changed": x.Card.SpecChanged,
-		})
+		}
+		if len(x.Card.History) > 0 && strings.TrimSpace(x.Card.History[len(x.Card.History)-1].Note) != "" {
+			item["last_note"] = x.Card.History[len(x.Card.History)-1].Note
+		}
+		out = append(out, item)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		pi, _ := out[i]["priority"].(int)

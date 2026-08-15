@@ -234,6 +234,9 @@ func TestListUsesLinearBoardStatusWithoutLocalWorkflowStatus(t *testing.T) {
 	if len(items) != 1 || items[0]["status"] != "In Review" {
 		t.Fatalf("items=%v", items)
 	}
+	if items[0]["last_note"] != "Linear snapshot" {
+		t.Fatalf("items=%v", items)
+	}
 	if _, exists := items[0]["runtime_status"]; exists {
 		t.Fatalf("local workflow status leaked into list: %v", items[0])
 	}
@@ -469,6 +472,39 @@ func TestBaseSyncRetryWritesActionableLinearComment(t *testing.T) {
 		if !strings.Contains(comment, marker) {
 			t.Fatalf("comment missing %q: %s", marker, comment)
 		}
+	}
+}
+
+func TestRunnerNeedsAttentionWritesActionableLinearComment(t *testing.T) {
+	note := runnerResultNote("runner-card", &RunnerResult{
+		Version: 1, CardID: "runner-card", Role: "qa", Attempt: 2,
+		Outcome: "needs_attention", Error: "acceptance command go test ./... failed: assertion output requires review",
+	})
+	comment := linearTransitionComment(&Card{ID: "runner-card"}, "claimed-qa", "needs_attention", "qa/supervisor", note)
+	for _, marker := range []string{"Code:", "worker-needs-attention", "Phase:", "Why:", "Needed:", "Fix:", "Recommendation:", "journal/workers/runner-card/2.qa.log", "go test ./..."} {
+		if !strings.Contains(comment, marker) {
+			t.Fatalf("comment missing %q: %s", marker, comment)
+		}
+	}
+}
+
+func TestRunnerFailureMovesCardWithActionableDiagnostic(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "runner-failure", []string{"src/runner.go"})
+	if _, err := s.withMoveInternal("runner-failure", "claimed-dev", "system/test", "claim", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.finishWorker(context.Background(), workerDone{
+		cardID: "runner-failure", role: "dev", attempt: 1, stage: "provider",
+		logOutput: "provider failed: invalid provider flag", err: fmt.Errorf("exit status 10"),
+	})
+	status, _, card, err := s.ReadCard("runner-failure")
+	if err != nil || status != "needs_attention" {
+		t.Fatalf("status=%q card=%+v err=%v", status, card, err)
+	}
+	diagnostic, ok := parseRunnerDiagnostic(card.History[len(card.History)-1].Note)
+	if !ok || diagnostic.Code != "provider-failed" || !strings.Contains(diagnostic.Why, "invalid provider flag") {
+		t.Fatalf("history=%+v", card.History)
 	}
 }
 
