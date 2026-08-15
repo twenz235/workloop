@@ -56,6 +56,10 @@ Groom → Linear Backlog + loop:ready → Todo → Dev → PR → QA → merge t
   rebasing. Dirty or conflicted worktrees stay intact and return to Dev for
   safe resolution.
 - QA checks the exact head SHA without modifying it.
+- QA returns one evidence-backed result for every acceptance criterion. Workloop
+  posts that report to the Linear issue and maps only `passed` results back to
+  checked acceptance boxes; failed, blocked, and not-run criteria remain
+  unchecked.
 - Workloop admits a Dev result to In Review only when the worktree is clean,
   the reported head matches the PR, and the latest `origin/dev` is an ancestor.
   QA also rechecks the base before merge and records the actual passing check

@@ -207,6 +207,10 @@ conflicted worktrees are preserved and returned to Dev with a clear retry note.
 Before In Review, the supervisor requires a clean worktree, matching PR/head
 SHAs, and current `origin/dev` ancestry. If `dev` moves during QA, the result
 is stale and the PR cannot be merged until QA is rerun on the current base.
+QA also reports each acceptance criterion separately. The report is posted as
+an idempotent Linear comment and only passed criteria are checked in the issue's
+visible checklist; a merge cannot proceed while any criterion is failed,
+blocked, not run, or missing.
 
 ## 8. Stop, restart, and recover
 

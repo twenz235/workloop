@@ -41,7 +41,7 @@ esac
 	if _, err := s.Claim("qa", "q"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PatchInternal("a", map[string]any{"base_sha": testOriginDevSHA(t, s), "base_sync_pending": false, "tested_head_sha": "head123", "qa_evidence": []string{"acceptance passed"}}, "test"); err != nil {
+	if _, err := s.PatchInternal("a", map[string]any{"base_sha": testOriginDevSHA(t, s), "base_sync_pending": false, "tested_head_sha": "head123", "qa_evidence": []string{"acceptance passed"}, "qa_acceptance_results": []AcceptanceResult{{CriterionIndex: 1, Status: "passed", Evidence: "acceptance passed"}}}, "test"); err != nil {
 		t.Fatal(err)
 	}
 	receipt, err := s.QAMerge(context.Background(), "a", "qa/q")
@@ -95,7 +95,7 @@ esac
 	if _, err := s.Claim("qa", "q"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PatchInternal("failing-check", map[string]any{"base_sha": testOriginDevSHA(t, s), "base_sync_pending": false, "tested_head_sha": "head123", "qa_evidence": []string{"acceptance passed"}}, "test"); err != nil {
+	if _, err := s.PatchInternal("failing-check", map[string]any{"base_sha": testOriginDevSHA(t, s), "base_sync_pending": false, "tested_head_sha": "head123", "qa_evidence": []string{"acceptance passed"}, "qa_acceptance_results": []AcceptanceResult{{CriterionIndex: 1, Status: "passed", Evidence: "acceptance passed"}}}, "test"); err != nil {
 		t.Fatal(err)
 	}
 	err := func() error {

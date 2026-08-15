@@ -380,7 +380,7 @@ esac
 	if _, err := s.Claim("qa", "qa-worker"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PatchInternal("qa-base", map[string]any{"base_sha": oldBase, "tested_head_sha": "head123", "qa_evidence": []string{"passed"}}, "QA evidence"); err != nil {
+	if _, err := s.PatchInternal("qa-base", map[string]any{"base_sha": oldBase, "tested_head_sha": "head123", "qa_evidence": []string{"passed"}, "qa_acceptance_results": []AcceptanceResult{{CriterionIndex: 1, Status: "passed", Evidence: "passed"}}}, "QA evidence"); err != nil {
 		t.Fatal(err)
 	}
 	advanceTestOriginDev(t, s, "qa-upstream.txt", "upstream\n")
@@ -437,7 +437,7 @@ esac
 	if _, err := s.Claim("qa", "qa-worker"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PatchInternal("qa-ancestry", map[string]any{"base_sha": oldBase, "tested_head_sha": workerHead, "qa_evidence": []string{"passed"}}, "QA evidence"); err != nil {
+	if _, err := s.PatchInternal("qa-ancestry", map[string]any{"base_sha": oldBase, "tested_head_sha": workerHead, "qa_evidence": []string{"passed"}, "qa_acceptance_results": []AcceptanceResult{{CriterionIndex: 1, Status: "passed", Evidence: "passed"}}}, "QA evidence"); err != nil {
 		t.Fatal(err)
 	}
 	newBase := advanceTestOriginDev(t, s, "qa-ancestry-upstream.txt", "upstream\n")

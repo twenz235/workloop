@@ -23,9 +23,9 @@ func TestSupervisorFakeEndToEnd(t *testing.T) {
 prompt=$(cat)
 attempt=$(printf '%%s' "$prompt" | sed -n 's/.*attempt=\([0-9][0-9]*\).*/\1/p' | head -1)
 if [ "$LOOPCTL_ROLE" = dev ]; then
-		printf '{"structured_output":{"version":1,"card_id":"%%s","role":"dev","attempt":%%s,"outcome":"completed","evidence":["dev verification"],"branch":"loop/%%s","pr":12,"base_sha":"%s","head_sha":"%s"}}' "$LOOPCTL_CARD_ID" "$attempt" "$LOOPCTL_CARD_ID"
+		printf '{"structured_output":{"version":1,"card_id":"%%s","role":"dev","attempt":%%s,"outcome":"completed","evidence":["dev verification"],"acceptance_results":[],"branch":"loop/%%s","pr":12,"base_sha":"%s","head_sha":"%s"}}' "$LOOPCTL_CARD_ID" "$attempt" "$LOOPCTL_CARD_ID"
 	else
-		printf '{"structured_output":{"version":1,"card_id":"%%s","role":"qa","attempt":%%s,"outcome":"completed","evidence":["acceptance passed"],"base_sha":"%s","head_sha":"%s"}}' "$LOOPCTL_CARD_ID" "$attempt"
+		printf '{"structured_output":{"version":1,"card_id":"%%s","role":"qa","attempt":%%s,"outcome":"completed","evidence":["acceptance passed"],"acceptance_results":[{"criterion_index":1,"status":"passed","evidence":"acceptance passed"}],"base_sha":"%s","head_sha":"%s"}}' "$LOOPCTL_CARD_ID" "$attempt"
 	fi
 `, head, head, head, head)
 	if err := os.WriteFile(provider, []byte(providerScript), 0700); err != nil {

@@ -183,7 +183,7 @@ esac
 	if _, err := s.Claim("qa", "q"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PatchInternal("done-sync", map[string]any{"tested_head_sha": "head123", "qa_evidence": []string{"passed"}}, "QA evidence"); err != nil {
+	if _, err := s.PatchInternal("done-sync", map[string]any{"tested_head_sha": "head123", "qa_evidence": []string{"passed"}, "qa_acceptance_results": []AcceptanceResult{{CriterionIndex: 1, Status: "passed", Evidence: "passed"}}}, "QA evidence"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.writeMergeReceipt("done-sync", 12, "merge123", "head123", "qa/q", nil); err != nil {

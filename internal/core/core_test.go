@@ -437,10 +437,11 @@ func TestRetryQAReturnsNeedsAttentionToInReviewWithFreshEvidence(t *testing.T) {
 	s := testState(t)
 	addTestCard(t, s, "qa-retry", []string{"qa-retry.go"})
 	if _, err := s.PatchInternal("qa-retry", map[string]any{
-		"pr":           12,
-		"qa_evidence":  []string{"old evidence"},
-		"stale":        true,
-		"spec_changed": false,
+		"pr":                    12,
+		"qa_evidence":           []string{"old evidence"},
+		"qa_acceptance_results": []AcceptanceResult{{CriterionIndex: 1, Status: "passed", Evidence: "old evidence"}},
+		"stale":                 true,
+		"spec_changed":          false,
 	}, "seed QA state"); err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +455,7 @@ func TestRetryQAReturnsNeedsAttentionToInReviewWithFreshEvidence(t *testing.T) {
 	if err != nil || status != "in_review" {
 		t.Fatalf("status=%q card=%+v err=%v", status, card, err)
 	}
-	if len(card.QAEvidence) != 0 || !card.Stale {
+	if len(card.QAEvidence) != 0 || len(card.QAAcceptanceResults) != 0 || !card.Stale {
 		t.Fatalf("retry must require fresh evidence without discarding stale state: %+v", card)
 	}
 	if len(card.History) == 0 || !strings.Contains(card.History[len(card.History)-1].Note, "QA retry:") {
