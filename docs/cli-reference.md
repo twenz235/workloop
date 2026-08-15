@@ -306,7 +306,7 @@ died or a machine was interrupted.
 loopctl sync-done
 ```
 
-Checks cards in the merge phase against GitHub, marks only confirmed merges done, synchronizes Linear, and completes related cleanup. It is safe to use when a QA merge succeeded but local completion was interrupted.
+Checks cards in the merge phase against GitHub, marks only confirmed merges done, performs one immediate full Linear sync when a card is completed, and completes related cleanup. It is safe to use when a QA merge succeeded but local completion was interrupted.
 
 ### `loopctl gc-worktrees`
 
@@ -382,10 +382,12 @@ Reports the other role's liveness from durable heartbeat data. This is primarily
 loopctl qa-merge CARD_ID --by QA_WORKER
 ```
 
-Merges the exact QA-verified PR into `dev` only after Workloop rechecks the
-tested head SHA, base branch, and every check returned by
+Merges the exact QA-verified PR into `dev` only after Workloop fetches the
+latest `origin/dev`, rechecks that base against the tested card and PR head,
+confirms the PR head includes that base, and verifies every check returned by
 `gh pr checks --json name,state,bucket,link`. Each reported check must have
-`bucket: pass`; the passed check names are stored in the durable merge receipt.
+`bucket: pass`; the actual passed check names are stored in the durable merge
+receipt.
 The supervisor normally calls it.
 
 ### `loopctl mark-stale`
@@ -394,7 +396,10 @@ The supervisor normally calls it.
 loopctl mark-stale --base-moved --merged-card CARD_ID --base-sha SHA
 ```
 
-After `dev` advances, selectively marks overlapping in-review cards stale so QA cannot approve results tested against an invalid base. The supervisor normally calls it after a merge.
+After `dev` advances, marks review cards stale when their recorded base SHA is
+no longer current; touch overlap remains an additional conservative trigger.
+Claimed QA cards return to In Review so they cannot approve results tested
+against an invalid base. The supervisor normally calls it after a merge.
 
 ### `loopctl runner`
 

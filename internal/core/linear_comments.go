@@ -20,7 +20,7 @@ func linearCommentNeeded(from, to, actor, note string) bool {
 		}
 	case "todo":
 		lower := strings.ToLower(note)
-		return strings.Contains(lower, "retry") || strings.Contains(lower, "runner") || strings.Contains(lower, "timeout")
+		return strings.Contains(lower, "retry") || strings.Contains(lower, "runner") || strings.Contains(lower, "timeout") || strings.Contains(lower, "base sync") || strings.Contains(lower, "origin/dev")
 	}
 	if from == "needs_attention" && !strings.HasPrefix(actor, "system/sync") && !strings.HasPrefix(actor, "system/linear") {
 		return true
@@ -147,6 +147,12 @@ func linearTransitionComment(card *Card, from, to, actor, note string) string {
 		needed = "A Dev attempt should inspect the recorded failure before retrying."
 		fix = "Read the worker result/journal, correct the transient failure if needed, and retry while attempts remain."
 		recommendation = "Keep the existing recovery note and avoid creating a duplicate card or branch."
+		lower := strings.ToLower(reason)
+		if strings.Contains(lower, "base sync") || strings.Contains(lower, "origin/dev") {
+			needed = "Dev must bring the existing branch up to the latest origin/dev and rerun verification."
+			fix = "In the existing worktree, fetch --no-tags origin dev, merge --no-edit origin/dev without rebase/reset, resolve conflicts, rerun verification, commit, and push."
+			recommendation = "Do not move the card to In Review until the base-sync gate passes."
+		}
 	}
 
 	marker := Hash([]byte(fmt.Sprintf("%s|%s|%s|%s|%d", cardIDForComment(card), from, to, actor, historyLengthForComment(card))))

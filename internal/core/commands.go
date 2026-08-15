@@ -34,7 +34,7 @@ func (s *State) List(status, linear string) ([]map[string]any, error) {
 			"id": x.Card.ID, "title": x.Card.Title, "status": boardStatus,
 			"linear_state": x.Card.LinearState, "linear_labels": x.Card.LinearLabels,
 			"priority": x.Card.Priority, "linear_url": x.Card.LinearURL, "pr": x.Card.PR,
-			"stale": x.Card.Stale, "spec_changed": x.Card.SpecChanged,
+			"stale": x.Card.Stale, "base_sync_pending": x.Card.BaseSyncPending, "spec_changed": x.Card.SpecChanged,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -492,11 +492,22 @@ func (s *State) Reconcile(role string) (map[string]any, error) {
 			} else if resultValid && result.Outcome == "completed" {
 				if n, prErr := prNumber(result.PR); prErr == nil {
 					if p, viewErr := s.prView(context.Background(), n); viewErr == nil && p.State == "OPEN" && p.BaseRefName == "dev" && p.HeadRefName == "loop/"+id && p.HeadRefOid == result.HeadSHA {
-						to = "in_review"
-						note = "recovered completed Dev result"
-						patch["branch"] = result.Branch
-						patch["pr"] = result.PR
-						patch["tested_head_sha"] = result.HeadSHA
+						if _, gateErr := s.verifyDevReviewGate(context.Background(), id, c, result.BaseSHA, result.HeadSHA); gateErr != nil {
+							to = "todo"
+							if c.Attempts >= c.MaxAttempts {
+								to = "needs_attention"
+							}
+							note = "base sync gate failed during stale-claim recovery: " + gateErr.Error()
+							patch["base_sync_pending"] = true
+						} else {
+							to = "in_review"
+							note = "recovered completed Dev result after origin/dev base sync"
+							patch["branch"] = result.Branch
+							patch["pr"] = result.PR
+							patch["base_sha"] = result.BaseSHA
+							patch["base_sync_pending"] = false
+							patch["tested_head_sha"] = result.HeadSHA
+						}
 					} else {
 						to = "needs_attention"
 					}
@@ -504,11 +515,15 @@ func (s *State) Reconcile(role string) (map[string]any, error) {
 					to = "needs_attention"
 				}
 			} else if c.Worktree != nil && *c.Worktree != "" {
-				dirty := gitOutput(*c.Worktree, "status", "--porcelain") != ""
-				ahead := gitOutput(*c.Worktree, "rev-list", "--count", s.Config.Base+"..HEAD")
-				if dirty || ahead != "0" {
+				baseSHA, fetchErr := fetchOriginDev(context.Background(), s.Config.RepoPath)
+				clean, cleanErr := gitWorktreeClean(context.Background(), *c.Worktree)
+				ancestor, ancestorErr := gitIsAncestor(context.Background(), *c.Worktree, originDevRef, "HEAD")
+				if fetchErr != nil || cleanErr != nil || ancestorErr != nil {
 					to = "needs_attention"
-					note = "stale Dev worktree contains unconfirmed changes"
+					note = "unable to verify Dev worktree against origin/dev"
+				} else if !clean || !ancestor {
+					to = "needs_attention"
+					note = fmt.Sprintf("stale Dev worktree is not safely synced to origin/dev %s", baseSHA)
 				}
 			}
 		} else {
@@ -531,7 +546,18 @@ func (s *State) Reconcile(role string) (map[string]any, error) {
 					moved = append(moved, id)
 					continue
 				case "OPEN":
-					patch["stale"] = c.Stale || c.TestedHeadSHA == nil || *c.TestedHeadSHA != p.HeadRefOid
+					baseSHA, fetchErr := fetchOriginDev(context.Background(), s.Config.RepoPath)
+					if fetchErr != nil {
+						to = "needs_attention"
+						note = "unable to refresh origin/dev before QA recovery"
+					} else {
+						baseChanged := c.BaseSHA == nil || *c.BaseSHA != baseSHA
+						patch["stale"] = c.Stale || baseChanged || c.TestedHeadSHA == nil || *c.TestedHeadSHA != p.HeadRefOid
+						if baseChanged {
+							note = fmt.Sprintf("base moved during QA recovery; card base %v, current dev base %s", c.BaseSHA, baseSHA)
+							patch["base_sha"] = baseSHA
+						}
+					}
 				default:
 					to = "needs_attention"
 				}

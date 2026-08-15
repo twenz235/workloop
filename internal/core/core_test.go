@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +14,9 @@ import (
 
 func testState(t *testing.T) *State {
 	t.Helper()
-	repo := filepath.Join(t.TempDir(), "repo")
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	origin := filepath.Join(root, "origin.git")
 	if err := os.Mkdir(repo, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +36,13 @@ func testState(t *testing.T) *State {
 		t.Fatalf("commit: %v %s", err, out)
 	}
 	_ = exec.Command("git", "-C", repo, "branch", "dev").Run()
-	s, err := Init("test", repo, filepath.Join(t.TempDir(), "state"))
+	if out, err := exec.Command("git", "init", "--bare", "-q", origin).CombinedOutput(); err != nil {
+		t.Fatalf("git init origin: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", repo, "push", "-q", origin, "dev:dev").CombinedOutput(); err != nil {
+		t.Fatalf("git seed origin: %v: %s", err, out)
+	}
+	s, err := Init("test", repo, filepath.Join(root, "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,6 +51,52 @@ func testState(t *testing.T) *State {
 		t.Fatal(err)
 	}
 	return s
+}
+
+func testOriginDevSHA(t *testing.T, s *State) string {
+	t.Helper()
+	useLocalOriginFetch(t, s)
+	origin := filepath.Join(filepath.Dir(s.Config.RepoPath), "origin.git")
+	sha, err := exec.Command("git", "--git-dir", origin, "rev-parse", "refs/heads/dev").Output()
+	if err != nil {
+		t.Fatalf("read test origin/dev: %v", err)
+	}
+	return strings.TrimSpace(string(sha))
+}
+
+func useLocalOriginFetch(t *testing.T, s *State) {
+	t.Helper()
+	if os.Getenv("LOOPCTL_TEST_GIT_WRAPPER") != "" {
+		return
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := filepath.Join(filepath.Dir(s.Config.RepoPath), "origin.git")
+	wrapper := filepath.Join(t.TempDir(), "git")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "-C" ] && [ "$3" = "fetch" ]; then
+    repo="$2"
+    shift 3
+    old=$(%q -C "$repo" config --local --get remote.origin.url 2>/dev/null || true)
+    %q -C "$repo" config --local remote.origin.url %q || exit 1
+    %q -C "$repo" fetch "$@"
+    status=$?
+    if [ -n "$old" ]; then
+        %q -C "$repo" config --local remote.origin.url "$old"
+    else
+        %q -C "$repo" config --local --unset remote.origin.url 2>/dev/null || true
+    fi
+    exit $status
+fi
+exec %q "$@"
+`, realGit, realGit, origin, realGit, realGit, realGit, realGit)
+	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOPCTL_TEST_GIT_WRAPPER", wrapper)
+	t.Setenv("PATH", filepath.Dir(wrapper)+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func testCard(id string, touches []string) []byte {
@@ -401,6 +456,19 @@ func TestRetryQAReturnsNeedsAttentionToInReviewWithFreshEvidence(t *testing.T) {
 	}
 	if len(card.History) == 0 || !strings.Contains(card.History[len(card.History)-1].Note, "QA retry:") {
 		t.Fatalf("history=%+v", card.History)
+	}
+}
+
+func TestBaseSyncRetryWritesActionableLinearComment(t *testing.T) {
+	note := "base sync gate failed: origin/dev moved after verification"
+	if !linearCommentNeeded("claimed-dev", "todo", "dev/supervisor", note) {
+		t.Fatal("base-sync retry should produce a Linear comment")
+	}
+	comment := linearTransitionComment(&Card{ID: "base-sync"}, "claimed-dev", "todo", "dev/supervisor", note)
+	for _, marker := range []string{"Why:", "Needed:", "fetch --no-tags origin dev", "Do not move the card to In Review"} {
+		if !strings.Contains(comment, marker) {
+			t.Fatalf("comment missing %q: %s", marker, comment)
+		}
 	}
 }
 

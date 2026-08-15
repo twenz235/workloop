@@ -23,11 +23,11 @@ func TestSupervisorFakeEndToEnd(t *testing.T) {
 prompt=$(cat)
 attempt=$(printf '%%s' "$prompt" | sed -n 's/.*attempt=\([0-9][0-9]*\).*/\1/p' | head -1)
 if [ "$LOOPCTL_ROLE" = dev ]; then
-  printf '{"structured_output":{"version":1,"card_id":"%%s","role":"dev","attempt":%%s,"outcome":"completed","evidence":["dev verification"],"branch":"loop/%%s","pr":12,"head_sha":"%s"}}' "$LOOPCTL_CARD_ID" "$attempt" "$LOOPCTL_CARD_ID"
-else
-  printf '{"structured_output":{"version":1,"card_id":"%%s","role":"qa","attempt":%%s,"outcome":"completed","evidence":["acceptance passed"],"head_sha":"%s"}}' "$LOOPCTL_CARD_ID" "$attempt"
-fi
-`, head, head)
+		printf '{"structured_output":{"version":1,"card_id":"%%s","role":"dev","attempt":%%s,"outcome":"completed","evidence":["dev verification"],"branch":"loop/%%s","pr":12,"base_sha":"%s","head_sha":"%s"}}' "$LOOPCTL_CARD_ID" "$attempt" "$LOOPCTL_CARD_ID"
+	else
+		printf '{"structured_output":{"version":1,"card_id":"%%s","role":"qa","attempt":%%s,"outcome":"completed","evidence":["acceptance passed"],"base_sha":"%s","head_sha":"%s"}}' "$LOOPCTL_CARD_ID" "$attempt"
+	fi
+`, head, head, head, head)
 	if err := os.WriteFile(provider, []byte(providerScript), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +45,7 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	useLocalOriginFetch(t, s)
 	s.Config.Linear.Enabled = false
 	s.Config.GitHub.Enabled = false
 	s.Config.Runner.Provider = "claude"

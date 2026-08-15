@@ -171,26 +171,35 @@ func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnv
 		return RunnerEnvelope{}, err
 	}
 	attempt := c.Attempts + 1
-	var worktree, branch, baseSHA, headSHA string
+	baseSHA, err := fetchOriginDev(ctx, s.Config.RepoPath)
+	if err != nil {
+		return RunnerEnvelope{}, fmt.Errorf("refresh origin/dev before %s worker: %w", role, err)
+	}
+	var worktree, branch, headSHA, baseSyncNote string
+	// Preserve a Dev base-sync failure while a human or QA retry is in flight;
+	// QA must not clear the guard merely by preparing its detached worktree.
+	baseSyncPending := c.BaseSyncPending
 	if role == "dev" {
 		branch = "loop/" + id
 		worktree = filepath.Join(s.Config.WorktreeRoot, id)
-		baseSHA = gitOutput(s.Config.RepoPath, "rev-parse", s.Config.Base)
-		if baseSHA == "" {
-			return RunnerEnvelope{}, E(8, "cannot resolve base dev")
-		}
-		headSHA = baseSHA
 		if _, err := os.Stat(worktree); errors.Is(err, os.ErrNotExist) {
-			args := []string{"-C", s.Config.RepoPath, "worktree", "add", "-b", branch, worktree, baseSHA}
+			args := []string{"worktree", "add", "-b", branch, worktree, originDevRef}
 			if gitOutput(s.Config.RepoPath, "show-ref", "--verify", "--hash", "refs/heads/"+branch) != "" {
-				args = []string{"-C", s.Config.RepoPath, "worktree", "add", worktree, branch}
+				args = []string{"worktree", "add", worktree, branch}
 			}
-			cmd := exec.CommandContext(ctx, "git", args...)
-			if out, e := cmd.CombinedOutput(); e != nil {
-				return RunnerEnvelope{}, E(8, "git worktree add failed: %s", out)
+			if _, e := gitRun(ctx, s.Config.RepoPath, args...); e != nil {
+				return RunnerEnvelope{}, e
 			}
 		} else if branchNow := gitOutput(worktree, "rev-parse", "--abbrev-ref", "HEAD"); branchNow != branch {
 			return RunnerEnvelope{}, E(7, "existing Dev worktree is on branch %q, want %q", branchNow, branch)
+		}
+		baseSyncPending, baseSyncNote, err = syncDevWorktree(ctx, worktree, branch)
+		if err != nil {
+			return RunnerEnvelope{}, err
+		}
+		headSHA, err = gitHead(ctx, worktree)
+		if err != nil {
+			return RunnerEnvelope{}, err
 		}
 	} else {
 		n, err := prNumber(c.PR)
@@ -202,28 +211,32 @@ func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnv
 			return RunnerEnvelope{}, err
 		}
 		headSHA = p.HeadRefOid
-		baseSHA = gitOutput(s.Config.RepoPath, "rev-parse", s.Config.Base)
-		if baseSHA == "" {
-			return RunnerEnvelope{}, E(8, "cannot resolve current dev base")
-		}
 		worktree = filepath.Join(s.Config.WorktreeRoot, id+"-qa")
 		if _, err := os.Stat(worktree); errors.Is(err, os.ErrNotExist) {
-			cmd := exec.CommandContext(ctx, "git", "-C", s.Config.RepoPath, "worktree", "add", "--detach", worktree, headSHA)
-			if out, e := cmd.CombinedOutput(); e != nil {
-				return RunnerEnvelope{}, E(8, "QA worktree add failed: %s", out)
+			if _, e := gitRun(ctx, s.Config.RepoPath, "worktree", "add", "--detach", worktree, headSHA); e != nil {
+				return RunnerEnvelope{}, e
 			}
 		} else if headNow := gitOutput(worktree, "rev-parse", "HEAD"); headNow != headSHA {
-			cmd := exec.CommandContext(ctx, "git", "-C", s.Config.RepoPath, "worktree", "remove", worktree)
-			if out, e := cmd.CombinedOutput(); e != nil {
+			if out, e := exec.CommandContext(ctx, "git", "-C", s.Config.RepoPath, "worktree", "remove", worktree).CombinedOutput(); e != nil {
 				return RunnerEnvelope{}, E(8, "stale QA worktree removal failed: %s", out)
 			}
-			cmd = exec.CommandContext(ctx, "git", "-C", s.Config.RepoPath, "worktree", "add", "--detach", worktree, headSHA)
-			if out, e := cmd.CombinedOutput(); e != nil {
+			if out, e := exec.CommandContext(ctx, "git", "-C", s.Config.RepoPath, "worktree", "add", "--detach", worktree, headSHA).CombinedOutput(); e != nil {
 				return RunnerEnvelope{}, E(8, "QA worktree refresh failed: %s", out)
 			}
 		}
 	}
-	patch := map[string]any{"base_sha": baseSHA, "attempts": attempt}
+	recordedBaseSHA := any(baseSHA)
+	if role == "qa" && (c.BaseSHA == nil || *c.BaseSHA != baseSHA) {
+		// Keep the previously tested base in the card until finishWorker can
+		// atomically mark this QA attempt stale. Do not let preparation hide a
+		// base movement by replacing the evidence before the freshness gate runs.
+		if c.BaseSHA == nil {
+			recordedBaseSHA = nil
+		} else {
+			recordedBaseSHA = *c.BaseSHA
+		}
+	}
+	patch := map[string]any{"base_sha": recordedBaseSHA, "base_sync_pending": baseSyncPending, "attempts": attempt}
 	if role == "qa" {
 		patch["tested_head_sha"] = headSHA
 	} else {
@@ -235,7 +248,67 @@ func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnv
 	}
 	cardData, _ := json.Marshal(raw)
 	output := filepath.Join(s.Root, "journal", "workers", id, fmt.Sprintf("%d.result.json", attempt))
-	return RunnerEnvelope{Version: 1, CardID: id, Role: role, Attempt: attempt, Provider: s.Config.Runner.Provider, ProviderPath: s.Config.Runner.ProviderPath, StateRoot: s.Root, Worktree: worktree, Branch: branch, BaseSHA: baseSHA, HeadSHA: headSHA, ContractHash: c.ContractHash, OutputPath: output, Card: cardData}, nil
+	return RunnerEnvelope{Version: 1, CardID: id, Role: role, Attempt: attempt, Provider: s.Config.Runner.Provider, ProviderPath: s.Config.Runner.ProviderPath, StateRoot: s.Root, Worktree: worktree, Branch: branch, BaseRef: c.Base, BaseSHA: baseSHA, BaseSyncPending: baseSyncPending, BaseSyncNote: baseSyncNote, HeadSHA: headSHA, ContractHash: c.ContractHash, OutputPath: output, Card: cardData}, nil
+}
+
+func (s *State) verifyDevReviewGate(ctx context.Context, id string, card *Card, reportedBaseSHA, reportedHeadSHA string) (string, error) {
+	latestBaseSHA, err := fetchOriginDev(ctx, s.Config.RepoPath)
+	if err != nil {
+		return "", fmt.Errorf("refresh origin/dev before In Review: %w", err)
+	}
+	if reportedBaseSHA != latestBaseSHA {
+		return "", fmt.Errorf("Dev verification used base %s, but origin/dev is now %s", reportedBaseSHA, latestBaseSHA)
+	}
+	if card.Worktree == nil || *card.Worktree == "" {
+		return "", fmt.Errorf("Dev worktree is missing")
+	}
+	worktree := *card.Worktree
+	branch := "loop/" + id
+	if card.Branch != nil && *card.Branch != "" {
+		branch = *card.Branch
+	}
+	branchNow, err := gitBranch(ctx, worktree)
+	if err != nil {
+		return "", fmt.Errorf("inspect Dev branch: %w", err)
+	}
+	if branchNow != branch {
+		return "", fmt.Errorf("Dev worktree branch is %s, want %s", branchNow, branch)
+	}
+	clean, err := gitWorktreeClean(ctx, worktree)
+	if err != nil {
+		return "", fmt.Errorf("inspect Dev worktree: %w", err)
+	}
+	if !clean {
+		return "", fmt.Errorf("Dev worktree is dirty after verification")
+	}
+	head, err := gitHead(ctx, worktree)
+	if err != nil {
+		return "", fmt.Errorf("inspect Dev HEAD: %w", err)
+	}
+	if head != reportedHeadSHA {
+		return "", fmt.Errorf("Dev worktree HEAD %s does not match reported head %s", head, reportedHeadSHA)
+	}
+	ancestor, err := gitIsAncestor(ctx, worktree, originDevRef, "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("verify origin/dev ancestry: %w", err)
+	}
+	if !ancestor {
+		return "", fmt.Errorf("origin/dev %s is not an ancestor of Dev HEAD %s", latestBaseSHA, head)
+	}
+	return latestBaseSHA, nil
+}
+
+func (s *State) retryDevBaseGate(id, note string) {
+	_, _, _, card, err := s.readCardPath(id)
+	if err != nil {
+		return
+	}
+	to := "todo"
+	if card.Attempts >= card.MaxAttempts {
+		to = "needs_attention"
+	}
+	patch := map[string]any{"claimed_at": nil, "claimed_by": nil, "base_sync_pending": true}
+	_, _ = s.withMoveInternal(id, to, "dev/supervisor", "base sync gate failed: "+note, patch)
 }
 
 func (s *State) PatchInternal(id string, patch map[string]any, note string) (map[string]any, error) {
@@ -264,9 +337,16 @@ func (s *State) finishWorker(ctx context.Context, d workerDone) {
 	if readErr != nil || status != expected || current.ContractHash != d.contractHash || current.Attempts != d.attempt {
 		return
 	}
-	if d.role == "qa" && (gitOutput(s.Config.RepoPath, "rev-parse", s.Config.Base) != d.baseSHA || current.TestedHeadSHA == nil || *current.TestedHeadSHA != d.headSHA || d.result.HeadSHA != d.headSHA) {
-		_, _ = s.withMoveInternal(d.cardID, "in_review", "qa/supervisor", "base or review head changed during QA", map[string]any{"stale": true, "claimed_at": nil, "claimed_by": nil})
-		return
+	if d.role == "qa" {
+		latestBaseSHA, baseErr := fetchOriginDev(ctx, s.Config.RepoPath)
+		if baseErr != nil {
+			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "qa/supervisor", "QA base freshness check failed: "+baseErr.Error(), nil)
+			return
+		}
+		if current.BaseSHA == nil || *current.BaseSHA != d.baseSHA || latestBaseSHA != d.baseSHA || d.result.BaseSHA != latestBaseSHA || current.TestedHeadSHA == nil || *current.TestedHeadSHA != d.headSHA || d.result.HeadSHA != d.headSHA {
+			_, _ = s.withMoveInternal(d.cardID, "in_review", "qa/supervisor", fmt.Sprintf("base or review head changed during QA; expected base %s, current origin/dev %s", d.baseSHA, latestBaseSHA), map[string]any{"stale": true, "base_sha": latestBaseSHA, "base_sync_pending": false, "claimed_at": nil, "claimed_by": nil})
+			return
+		}
 	}
 	if d.result.Outcome == "needs_attention" {
 		_, _ = s.withMoveInternal(d.cardID, "needs_attention", d.role+"/supervisor", d.result.Error, nil)
@@ -299,12 +379,23 @@ func (s *State) finishWorker(ctx context.Context, d workerDone) {
 			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "dev/supervisor", note, nil)
 			return
 		}
-		_, _ = s.withMoveInternal(d.cardID, "in_review", "dev/supervisor", "runner completed", map[string]any{"branch": d.result.Branch, "pr": d.result.PR, "tested_head_sha": d.result.HeadSHA, "claimed_at": nil, "claimed_by": nil})
+		latestBaseSHA, gateErr := s.verifyDevReviewGate(ctx, d.cardID, current, d.result.BaseSHA, d.result.HeadSHA)
+		if gateErr != nil {
+			s.retryDevBaseGate(d.cardID, gateErr.Error())
+			return
+		}
+		_, _ = s.withMoveInternal(d.cardID, "in_review", "dev/supervisor", "runner completed after origin/dev base sync", map[string]any{"branch": d.result.Branch, "pr": d.result.PR, "base_sha": latestBaseSHA, "base_sync_pending": false, "tested_head_sha": d.result.HeadSHA, "claimed_at": nil, "claimed_by": nil})
 		return
 	}
 	_, _ = s.PatchInternal(d.cardID, map[string]any{"qa_evidence": d.result.Evidence, "stale": false}, "QA evidence")
 	if _, err := s.QAMerge(ctx, d.cardID, "qa/supervisor"); err != nil {
-		_, _ = s.withMoveInternal(d.cardID, "needs_attention", "qa/supervisor", err.Error(), nil)
+		to := "needs_attention"
+		patch := map[string]any(nil)
+		if strings.Contains(strings.ToLower(err.Error()), "base changed") {
+			to = "in_review"
+			patch = map[string]any{"stale": true, "claimed_at": nil, "claimed_by": nil}
+		}
+		_, _ = s.withMoveInternal(d.cardID, to, "qa/supervisor", err.Error(), patch)
 		return
 	}
 	_, _ = s.SyncDone(ctx)

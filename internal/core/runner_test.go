@@ -9,10 +9,24 @@ import (
 	"testing"
 )
 
+func TestRunnerPromptIncludesOriginDevBaseSyncContract(t *testing.T) {
+	prompt := runnerPrompt(RunnerEnvelope{
+		Version: 1, CardID: "card-1", Role: "dev", Attempt: 2,
+		BaseRef: "dev", BaseSHA: "base-sha", BaseSyncPending: true,
+		BaseSyncNote: "worker must resolve the merge", HeadSHA: "head-sha",
+		Card: []byte(`{"id":"card-1","contract_hash":"hash"}`),
+	})
+	for _, marker := range []string{"origin/dev", "--no-tags", "--no-edit", "git pull", "base-sha", "rebase", "discard", "reset", "resolve", "head_sha"} {
+		if !strings.Contains(prompt, marker) {
+			t.Fatalf("prompt missing %q: %s", marker, prompt)
+		}
+	}
+}
+
 func TestRunProviderWritesValidatedResultAndStripsLinearToken(t *testing.T) {
 	dir := t.TempDir()
 	provider := filepath.Join(dir, "fake-claude")
-	script := "#!/bin/sh\n[ -z \"$LINEAR_API_TOKEN\" ] || exit 9\nfor arg do [ \"$arg\" != '-' ] || exit 8; done\nprompt=$(sed -n '1p')\n[ -n \"$prompt\" ] || exit 7\nprintf '%s' '{\"structured_output\":{\"version\":1,\"card_id\":\"card-1\",\"role\":\"dev\",\"attempt\":1,\"outcome\":\"completed\",\"evidence\":[\"tests pass\"],\"branch\":\"loop/card-1\",\"pr\":1,\"head_sha\":\"abc\"}}'\n"
+	script := "#!/bin/sh\n[ -z \"$LINEAR_API_TOKEN\" ] || exit 9\nfor arg do [ \"$arg\" != '-' ] || exit 8; done\nprompt=$(sed -n '1p')\n[ -n \"$prompt\" ] || exit 7\nprintf '%s' '{\"structured_output\":{\"version\":1,\"card_id\":\"card-1\",\"role\":\"dev\",\"attempt\":1,\"outcome\":\"completed\",\"evidence\":[\"tests pass\"],\"branch\":\"loop/card-1\",\"pr\":1,\"base_sha\":\"base\",\"head_sha\":\"abc\"}}'\n"
 	if err := os.WriteFile(provider, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +111,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$sandbox" = "read-only" ] || { printf 'QA sandbox mismatch' >&2; exit 2; }
 [ "$approve" = "no" ] || { printf 'QA must not auto-approve' >&2; exit 2; }
-printf '%s' '{"version":1,"card_id":"card-2","role":"qa","attempt":3,"outcome":"completed","evidence":["ok"],"head_sha":"head"}' > "$out"
+	printf '%s' '{"version":1,"card_id":"card-2","role":"qa","attempt":3,"outcome":"completed","evidence":["ok"],"base_sha":"base","head_sha":"head"}' > "$out"
 `
 	if err := os.WriteFile(provider, []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -133,7 +147,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$approve" = "yes" ] || { printf 'Dev approval missing' >&2; exit 2; }
 [ "$sandbox" = "no" ] || { printf 'incompatible Dev sandbox flag' >&2; exit 2; }
-printf '%s' '{"version":1,"card_id":"card-4","role":"dev","attempt":1,"outcome":"completed","evidence":["ok"],"branch":"loop/card-4","pr":4,"head_sha":"head"}' > "$out"
+	printf '%s' '{"version":1,"card_id":"card-4","role":"dev","attempt":1,"outcome":"completed","evidence":["ok"],"branch":"loop/card-4","pr":4,"base_sha":"base","head_sha":"head"}' > "$out"
 `
 	if err := os.WriteFile(provider, []byte(script), 0700); err != nil {
 		t.Fatal(err)

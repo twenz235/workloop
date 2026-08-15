@@ -118,7 +118,7 @@ For an automatic background process that starts at login:
 loopctl startup enable
 ```
 
-Both modes perform an immediate Linear sync. While running, the supervisor polls Linear every five minutes by default, moves eligible issues from Backlog to Todo, starts isolated Dev and QA workers, and completes verified merges into `dev`.
+Both modes perform an immediate Linear sync. While running, the supervisor polls Linear every five minutes by default, moves eligible issues from Backlog to Todo, starts isolated Dev and QA workers, and completes verified merges into `dev`. A confirmed Done transition also triggers one immediate full Linear sync instead of waiting for the next polling interval.
 
 Do not run `loopctl start` while the LaunchAgent is already active. Use foreground mode for observation and debugging; use startup mode for everyday unattended operation.
 
@@ -195,6 +195,13 @@ This returns the card to In Review, clears old QA evidence, and leaves a
 Linear comment explaining the decision. Blocking findings or a changed
 contract must go through `resolve --to rework` or contract re-approval first.
 
+Workloop fetches `origin/dev` before every worker preparation. A clean existing
+Dev branch is merged forward with `git merge --no-edit origin/dev`; dirty or
+conflicted worktrees are preserved and returned to Dev with a clear retry note.
+Before In Review, the supervisor requires a clean worktree, matching PR/head
+SHAs, and current `origin/dev` ancestry. If `dev` moves during QA, the result
+is stale and the PR cannot be merged until QA is rerun on the current base.
+
 ## 8. Stop, restart, and recover
 
 Stop a foreground supervisor safely:
@@ -226,7 +233,7 @@ loopctl sync-done
 loopctl gc-worktrees
 ```
 
-`doctor` validates and recovers durable transactions. `reconcile` recovers stale worker claims. `sync-done` confirms already merged PRs before marking cards done. `gc-worktrees` removes only verified terminal worktrees.
+`doctor` validates and recovers durable transactions. `reconcile` recovers stale worker claims. `sync-done` confirms already merged PRs before marking cards done and performs one immediate full Linear sync after a confirmed completion. `gc-worktrees` removes only verified terminal worktrees.
 
 ## 9. Recommended daily flow
 
