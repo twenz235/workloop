@@ -172,12 +172,14 @@ func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnv
 	}
 	attempt := c.Attempts + 1
 	var worktree, branch, baseSHA, headSHA string
+	baseSyncRequired := false
 	if role == "dev" {
 		branch = "loop/" + id
 		worktree = filepath.Join(s.Config.WorktreeRoot, id)
-		baseSHA = gitOutput(s.Config.RepoPath, "rev-parse", s.Config.Base)
-		if baseSHA == "" {
-			return RunnerEnvelope{}, E(8, "cannot resolve base dev")
+		var fetchErr error
+		baseSHA, fetchErr = fetchBaseSHA(ctx, s.Config.RepoPath, s.Config.Base)
+		if fetchErr != nil {
+			return RunnerEnvelope{}, fetchErr
 		}
 		headSHA = baseSHA
 		if _, err := os.Stat(worktree); errors.Is(err, os.ErrNotExist) {
@@ -192,6 +194,11 @@ func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnv
 		} else if branchNow := gitOutput(worktree, "rev-parse", "--abbrev-ref", "HEAD"); branchNow != branch {
 			return RunnerEnvelope{}, E(7, "existing Dev worktree is on branch %q, want %q", branchNow, branch)
 		}
+		var syncErr error
+		baseSyncRequired, syncErr = syncDevWorktreeBase(ctx, worktree, baseSHA)
+		if syncErr != nil {
+			return RunnerEnvelope{}, syncErr
+		}
 	} else {
 		n, err := prNumber(c.PR)
 		if err != nil {
@@ -202,9 +209,10 @@ func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnv
 			return RunnerEnvelope{}, err
 		}
 		headSHA = p.HeadRefOid
-		baseSHA = gitOutput(s.Config.RepoPath, "rev-parse", s.Config.Base)
-		if baseSHA == "" {
-			return RunnerEnvelope{}, E(8, "cannot resolve current dev base")
+		var fetchErr error
+		baseSHA, fetchErr = fetchBaseSHA(ctx, s.Config.RepoPath, s.Config.Base)
+		if fetchErr != nil {
+			return RunnerEnvelope{}, fetchErr
 		}
 		worktree = filepath.Join(s.Config.WorktreeRoot, id+"-qa")
 		if _, err := os.Stat(worktree); errors.Is(err, os.ErrNotExist) {
@@ -235,7 +243,7 @@ func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnv
 	}
 	cardData, _ := json.Marshal(raw)
 	output := filepath.Join(s.Root, "journal", "workers", id, fmt.Sprintf("%d.result.json", attempt))
-	return RunnerEnvelope{Version: 1, CardID: id, Role: role, Attempt: attempt, Provider: s.Config.Runner.Provider, ProviderPath: s.Config.Runner.ProviderPath, StateRoot: s.Root, Worktree: worktree, Branch: branch, BaseSHA: baseSHA, HeadSHA: headSHA, ContractHash: c.ContractHash, OutputPath: output, Card: cardData}, nil
+	return RunnerEnvelope{Version: 1, CardID: id, Role: role, Attempt: attempt, Provider: s.Config.Runner.Provider, ProviderPath: s.Config.Runner.ProviderPath, StateRoot: s.Root, Worktree: worktree, Branch: branch, BaseRef: s.Config.Base, BaseSHA: baseSHA, BaseSyncRequired: baseSyncRequired, HeadSHA: headSHA, ContractHash: c.ContractHash, OutputPath: output, Card: cardData}, nil
 }
 
 func (s *State) PatchInternal(id string, patch map[string]any, note string) (map[string]any, error) {
@@ -264,9 +272,16 @@ func (s *State) finishWorker(ctx context.Context, d workerDone) {
 	if readErr != nil || status != expected || current.ContractHash != d.contractHash || current.Attempts != d.attempt {
 		return
 	}
-	if d.role == "qa" && (gitOutput(s.Config.RepoPath, "rev-parse", s.Config.Base) != d.baseSHA || current.TestedHeadSHA == nil || *current.TestedHeadSHA != d.headSHA || d.result.HeadSHA != d.headSHA) {
-		_, _ = s.withMoveInternal(d.cardID, "in_review", "qa/supervisor", "base or review head changed during QA", map[string]any{"stale": true, "claimed_at": nil, "claimed_by": nil})
-		return
+	if d.role == "qa" {
+		latestBaseSHA, baseErr := fetchBaseSHA(ctx, s.Config.RepoPath, s.Config.Base)
+		if baseErr != nil {
+			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "qa/supervisor", baseErr.Error(), nil)
+			return
+		}
+		if latestBaseSHA != d.baseSHA || current.TestedHeadSHA == nil || *current.TestedHeadSHA != d.headSHA || d.result.HeadSHA != d.headSHA {
+			_, _ = s.withMoveInternal(d.cardID, "in_review", "qa/supervisor", "base or review head changed during QA", map[string]any{"stale": true, "claimed_at": nil, "claimed_by": nil})
+			return
+		}
 	}
 	if d.result.Outcome == "needs_attention" {
 		_, _ = s.withMoveInternal(d.cardID, "needs_attention", d.role+"/supervisor", d.result.Error, nil)
@@ -285,6 +300,30 @@ func (s *State) finishWorker(ctx context.Context, d workerDone) {
 		return
 	}
 	if d.role == "dev" {
+		latestBaseSHA, baseErr := fetchBaseSHA(ctx, s.Config.RepoPath, s.Config.Base)
+		if baseErr != nil {
+			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "dev/supervisor", baseErr.Error(), nil)
+			return
+		}
+		worktree := filepath.Join(s.Config.WorktreeRoot, d.cardID)
+		if current.Worktree != nil && *current.Worktree != "" {
+			worktree = *current.Worktree
+		}
+		headNow := gitOutput(worktree, "rev-parse", "HEAD")
+		clean := strings.TrimSpace(gitOutput(worktree, "status", "--porcelain")) == ""
+		baseReady := clean && headNow == d.result.HeadSHA && gitIsAncestor(ctx, worktree, latestBaseSHA, headNow)
+		if !baseReady {
+			to := "todo"
+			if current.Attempts >= current.MaxAttempts {
+				to = "needs_attention"
+			}
+			note := fmt.Sprintf("dev base advanced to %s; merge origin/%s into the branch and rerun verification before review", latestBaseSHA, s.Config.Base)
+			if !clean {
+				note = "Dev worktree is not clean; preserve the changes, sync the latest base, then rerun verification before review"
+			}
+			_, _ = s.withMoveInternal(d.cardID, to, "dev/supervisor", note, map[string]any{"base_sha": latestBaseSHA, "stale": true, "claimed_at": nil, "claimed_by": nil})
+			return
+		}
 		n, err := prNumber(d.result.PR)
 		if err != nil {
 			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "dev/supervisor", "runner did not return a PR", nil)
@@ -299,7 +338,7 @@ func (s *State) finishWorker(ctx context.Context, d workerDone) {
 			_, _ = s.withMoveInternal(d.cardID, "needs_attention", "dev/supervisor", note, nil)
 			return
 		}
-		_, _ = s.withMoveInternal(d.cardID, "in_review", "dev/supervisor", "runner completed", map[string]any{"branch": d.result.Branch, "pr": d.result.PR, "tested_head_sha": d.result.HeadSHA, "claimed_at": nil, "claimed_by": nil})
+		_, _ = s.withMoveInternal(d.cardID, "in_review", "dev/supervisor", "runner completed after base refresh", map[string]any{"branch": d.result.Branch, "pr": d.result.PR, "base_sha": latestBaseSHA, "tested_head_sha": d.result.HeadSHA, "stale": false, "claimed_at": nil, "claimed_by": nil})
 		return
 	}
 	_, _ = s.PatchInternal(d.cardID, map[string]any{"qa_evidence": d.result.Evidence, "stale": false}, "QA evidence")

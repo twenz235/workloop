@@ -14,20 +14,22 @@ import (
 )
 
 type RunnerEnvelope struct {
-	Version      int             `json:"version"`
-	CardID       string          `json:"card_id"`
-	Role         string          `json:"role"`
-	Attempt      int             `json:"attempt"`
-	Provider     string          `json:"provider"`
-	ProviderPath string          `json:"provider_path"`
-	StateRoot    string          `json:"state_root"`
-	Worktree     string          `json:"worktree"`
-	Branch       string          `json:"branch"`
-	BaseSHA      string          `json:"base_sha"`
-	HeadSHA      string          `json:"head_sha,omitempty"`
-	ContractHash string          `json:"contract_hash"`
-	OutputPath   string          `json:"output_path"`
-	Card         json.RawMessage `json:"card"`
+	Version          int             `json:"version"`
+	CardID           string          `json:"card_id"`
+	Role             string          `json:"role"`
+	Attempt          int             `json:"attempt"`
+	Provider         string          `json:"provider"`
+	ProviderPath     string          `json:"provider_path"`
+	StateRoot        string          `json:"state_root"`
+	Worktree         string          `json:"worktree"`
+	Branch           string          `json:"branch"`
+	BaseRef          string          `json:"base_ref"`
+	BaseSHA          string          `json:"base_sha"`
+	BaseSyncRequired bool            `json:"base_sync_required,omitempty"`
+	HeadSHA          string          `json:"head_sha,omitempty"`
+	ContractHash     string          `json:"contract_hash"`
+	OutputPath       string          `json:"output_path"`
+	Card             json.RawMessage `json:"card"`
 }
 
 type RunnerResult struct {
@@ -133,7 +135,10 @@ func pathWithin(root, path string) bool {
 const resultSchema = `{"type":"object","properties":{"version":{"type":"integer"},"card_id":{"type":"string"},"role":{"type":"string"},"attempt":{"type":"integer"},"outcome":{"type":"string","enum":["completed","retryable","needs_attention"]},"evidence":{"type":"array","items":{"type":"string"}},"branch":{"type":["string","null"]},"pr":{"type":["integer","null"]},"head_sha":{"type":["string","null"]},"error":{"type":["string","null"]}},"required":["version","card_id","role","attempt","outcome","evidence","branch","pr","head_sha","error"],"additionalProperties":false}`
 
 func runnerPrompt(e RunnerEnvelope) string {
-	mode := "Implement the card in the assigned worktree, run every verification command, commit, push, and open a PR with base dev."
+	mode := fmt.Sprintf("Implement the card in the assigned worktree. Before final verification and before reporting completed, fetch origin/%s and merge it into the branch with a merge commit (never rebase), resolve any conflicts, rerun every verification command, commit, push, and open a PR with base %s.", e.BaseRef, e.BaseRef)
+	if e.BaseSyncRequired {
+		mode += " The worktree was detected as behind the current base; synchronizing and resolving that base merge is mandatory before review."
+	}
 	if e.Role == "qa" {
 		mode = "Review the exact tested head without editing source. Run acceptance verification. Do not commit or push. Report blocking findings as needs_attention; otherwise completed."
 	}

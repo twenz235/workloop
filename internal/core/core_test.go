@@ -38,6 +38,18 @@ func testState(t *testing.T) *State {
 		t.Fatal(err)
 	}
 	s.Config.GitHub.Enabled = false
+	previousFetch := fetchBaseSHAImpl
+	fetchBaseSHAImpl = func(_ context.Context, repoPath, base string) (string, error) {
+		sha := gitOutput(repoPath, "rev-parse", "--verify", base+"^{commit}")
+		if sha == "" {
+			return "", E(8, "test base %s is unavailable", base)
+		}
+		if err := exec.Command("git", "-C", repoPath, "update-ref", "refs/remotes/origin/"+base, sha).Run(); err != nil {
+			return "", err
+		}
+		return sha, nil
+	}
+	t.Cleanup(func() { fetchBaseSHAImpl = previousFetch })
 	if err := s.SaveConfig(); err != nil {
 		t.Fatal(err)
 	}
