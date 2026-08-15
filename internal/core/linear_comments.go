@@ -20,7 +20,7 @@ func linearCommentNeeded(from, to, actor, note string) bool {
 		}
 	case "todo":
 		lower := strings.ToLower(note)
-		return strings.Contains(lower, "retry") || strings.Contains(lower, "runner") || strings.Contains(lower, "timeout")
+		return strings.Contains(lower, "retry") || strings.Contains(lower, "runner") || strings.Contains(lower, "timeout") || strings.Contains(lower, "base sync") || strings.Contains(lower, "origin/dev")
 	}
 	if from == "needs_attention" && !strings.HasPrefix(actor, "system/sync") && !strings.HasPrefix(actor, "system/linear") {
 		return true
@@ -110,6 +110,7 @@ func linearTransitionComment(card *Card, from, to, actor, note string) string {
 	needed := "The owner must review the evidence before automation continues."
 	fix := "Inspect the card, PR, and verification output, then apply the safe workflow command for this status."
 	recommendation := "Keep the Linear issue visible and record the decision in the next transition note."
+	diagnosticCode, diagnosticPhase, diagnosticLog := "", "", ""
 
 	switch to {
 	case "needs_attention":
@@ -147,12 +148,41 @@ func linearTransitionComment(card *Card, from, to, actor, note string) string {
 		needed = "A Dev attempt should inspect the recorded failure before retrying."
 		fix = "Read the worker result/journal, correct the transient failure if needed, and retry while attempts remain."
 		recommendation = "Keep the existing recovery note and avoid creating a duplicate card or branch."
+		lower := strings.ToLower(reason)
+		if strings.Contains(lower, "base sync") || strings.Contains(lower, "origin/dev") {
+			needed = "Dev must bring the existing branch up to the latest origin/dev and rerun verification."
+			fix = "In the existing worktree, fetch --no-tags origin dev, merge --no-edit origin/dev without rebase/reset, resolve conflicts, rerun verification, commit, and push."
+			recommendation = "Do not move the card to In Review until the base-sync gate passes."
+		}
+	}
+	if diagnostic, ok := parseRunnerDiagnostic(reason); ok {
+		reason = diagnostic.Why
+		diagnosticCode = diagnostic.Code
+		diagnosticPhase = diagnostic.Phase
+		diagnosticLog = diagnostic.Log
+		if diagnostic.Needed != "" {
+			needed = linearCommentValue(diagnostic.Needed)
+		}
+		if diagnostic.Fix != "" {
+			fix = linearCommentValue(diagnostic.Fix)
+		}
+		if diagnostic.Recommendation != "" {
+			recommendation = linearCommentValue(diagnostic.Recommendation)
+		}
 	}
 
 	marker := Hash([]byte(fmt.Sprintf("%s|%s|%s|%s|%d", cardIDForComment(card), from, to, actor, historyLengthForComment(card))))
-	return fmt.Sprintf("<!-- workloop-comment:%s -->\n## Workloop status: `%s`\n\n- **Why:** %s\n- **Needed:** %s\n- **Fix:** %s\n- **Recommendation:** %s\n\nTransition: `%s` → `%s` by `%s`.",
+	diagnosticBlock := ""
+	if diagnosticCode != "" {
+		diagnosticBlock = fmt.Sprintf("- **Code:** `%s`\n- **Phase:** %s\n", linearCommentValue(diagnosticCode), linearCommentValue(diagnosticPhase))
+		if diagnosticLog != "" {
+			diagnosticBlock += fmt.Sprintf("- **Log:** `%s`\n", linearCommentValue(diagnosticLog))
+		}
+	}
+	return fmt.Sprintf("<!-- workloop-comment:%s -->\n## Workloop status: `%s`\n\n%s- **Why:** %s\n- **Needed:** %s\n- **Fix:** %s\n- **Recommendation:** %s\n\nTransition: `%s` → `%s` by `%s`.",
 		marker,
 		linearCommentValue(to),
+		diagnosticBlock,
 		linearCommentValue(reason),
 		needed,
 		fix,

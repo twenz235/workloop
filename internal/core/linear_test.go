@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -154,6 +155,83 @@ func TestLinearFailureReturnsEight(t *testing.T) {
 	_, err := s.Sync(context.Background())
 	if ExitCode(err) != 8 {
 		t.Fatalf("exit=%d err=%v", ExitCode(err), err)
+	}
+}
+
+func TestSyncDonePerformsImmediateFullLinearSync(t *testing.T) {
+	s := testState(t)
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	ghScript := `#!/bin/sh
+case "$1 $2" in
+  "pr view") printf '%s\n' '{"number":12,"state":"MERGED","baseRefName":"dev","headRefName":"loop/done-sync","headRefOid":"head123","mergeCommit":{"oid":"merge123"},"url":"https://github.test/pr/12"}' ;;
+  *) exit 2 ;;
+esac
+`
+	if err := os.WriteFile(gh, []byte(ghScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	useLocalOriginFetch(t, s)
+	addTestCard(t, s, "done-sync", []string{"done.go"})
+	if _, err := s.Claim("dev", "d"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Move("done-sync", "in_review", "dev/d", "PR opened", map[string]any{"pr": 12}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim("qa", "q"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PatchInternal("done-sync", map[string]any{"tested_head_sha": "head123", "qa_evidence": []string{"passed"}}, "QA evidence"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.writeMergeReceipt("done-sync", 12, "merge123", "head123", "qa/q", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	s.Config.Linear.Enabled = true
+	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	s.Config.Linear.TeamID = "team-1"
+	t.Setenv("LINEAR_API_TOKEN", "x")
+	issueQueries := 0
+	oldClient := defaultLinearHTTPClient
+	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		query := string(body)
+		switch {
+		case strings.Contains(query, "TeamStates"):
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":{"team":{"states":{"nodes":[{"id":"todo-id","name":"Todo"},{"id":"done-id","name":"Done"}]}}}}`)), Header: http.Header{}}, nil
+		case strings.Contains(query, "MoveLoopIssue"):
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":{"issueUpdate":{"success":true}}}`)), Header: http.Header{}}, nil
+		case strings.Contains(query, "LoopIssues"):
+			issueQueries++
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":{"team":{"issues":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`)), Header: http.Header{}}, nil
+		default:
+			return nil, fmt.Errorf("unexpected Linear request: %s", query)
+		}
+	})}
+	t.Cleanup(func() { defaultLinearHTTPClient = oldClient })
+
+	result, err := s.SyncDone(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result["done"].([]string)) != 1 {
+		t.Fatalf("result=%v", result)
+	}
+	if issueQueries != 1 {
+		t.Fatalf("full Linear sync queries=%d, want 1", issueQueries)
+	}
+	runtime, err := s.loadLinearRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.LastSyncAt == "" {
+		t.Fatal("immediate full sync did not update last_sync_at")
+	}
+	if len(runtime.Outbox) != 0 {
+		t.Fatalf("outbox=%v, want empty after successful sync", runtime.Outbox)
 	}
 }
 

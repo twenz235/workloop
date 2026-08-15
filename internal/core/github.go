@@ -202,6 +202,9 @@ func (s *State) QAMerge(ctx context.Context, id, by string) (map[string]any, err
 	if card.Stale || card.SpecChanged {
 		return nil, E(2, "stale or changed card cannot merge")
 	}
+	if card.BaseSyncPending {
+		return nil, E(2, "Dev base sync is not complete")
+	}
 	for _, f := range card.QAFindings {
 		if f.Severity == "blocking" {
 			return nil, E(2, "blocking findings remain")
@@ -233,8 +236,28 @@ func (s *State) QAMerge(ctx context.Context, id, by string) (map[string]any, err
 	if p.State != "OPEN" {
 		return nil, E(2, "PR is not open")
 	}
+	latestBaseSHA, err := fetchOriginDev(ctx, s.Config.RepoPath)
+	if err != nil {
+		return nil, fmt.Errorf("QA base freshness check failed: %w", err)
+	}
+	if card.BaseSHA == nil || *card.BaseSHA != latestBaseSHA {
+		return nil, E(2, "dev base changed during QA: tested %v, current origin/dev %s", card.BaseSHA, latestBaseSHA)
+	}
+	if err := verifyPRIncludesOriginDev(ctx, card, p.HeadRefOid, latestBaseSHA); err != nil {
+		return nil, err
+	}
 	checks, err := s.verifyPRChecks(ctx, n)
 	if err != nil {
+		return nil, err
+	}
+	latestBaseSHA, err = fetchOriginDev(ctx, s.Config.RepoPath)
+	if err != nil {
+		return nil, fmt.Errorf("QA base freshness check failed before merge: %w", err)
+	}
+	if card.BaseSHA == nil || *card.BaseSHA != latestBaseSHA {
+		return nil, E(2, "dev base changed during QA: tested %v, current origin/dev %s", card.BaseSHA, latestBaseSHA)
+	}
+	if err := verifyPRIncludesOriginDev(ctx, card, p.HeadRefOid, latestBaseSHA); err != nil {
 		return nil, err
 	}
 	if _, err := s.gh(ctx, "pr", "merge", strconv.Itoa(n), "--repo", s.Config.Repo, "--merge", "--match-head-commit", *card.TestedHeadSHA); err != nil {
@@ -324,10 +347,21 @@ func (s *State) SyncDone(ctx context.Context) (map[string]any, error) {
 		if e = s.releaseReservation(id); e != nil {
 			return nil, e
 		}
-		if _, e = s.MarkStale(id, p.MergeCommit.OID); e != nil {
+		staleBaseSHA := p.MergeCommit.OID
+		if fetchedBaseSHA, fetchErr := fetchOriginDev(ctx, s.Config.RepoPath); fetchErr == nil {
+			staleBaseSHA = fetchedBaseSHA
+		}
+		if _, e = s.MarkStale(id, staleBaseSHA); e != nil {
 			return nil, e
 		}
 		done = append(done, id)
+	}
+	if len(done) > 0 && s.Config.Linear.Enabled {
+		// A confirmed completion should refresh the full Linear snapshot now,
+		// rather than waiting for the supervisor's next polling interval. Sync
+		// is best-effort here: the durable outbox and the next poll recover a
+		// temporary Linear outage without undoing the local Done transition.
+		_, _ = s.Sync(ctx)
 	}
 	return map[string]any{"done": done}, nil
 }
@@ -350,14 +384,20 @@ func (s *State) MarkStale(mergedID, baseSHA string) (map[string]any, error) {
 		if e != nil || !(status == "in_review" || status == "claimed-qa") {
 			continue
 		}
-		if !patternsConflict(merged.Touches, r.Touches) {
+		_, _, _, review, e := s.readCardPath(r.CardID)
+		if e != nil {
+			continue
+		}
+		baseChanged := review.BaseSHA == nil || *review.BaseSHA != baseSHA
+		if !baseChanged && !patternsConflict(merged.Touches, r.Touches) {
 			continue
 		}
 		to := status
 		if status == "claimed-qa" {
 			to = "in_review"
 		}
-		if _, e = s.withMoveInternal(r.CardID, to, "system", "base moved", map[string]any{"stale": true, "base_sha": baseSHA, "claimed_at": nil, "claimed_by": nil}); e != nil {
+		note := fmt.Sprintf("base moved; card base %v, current dev base %s", review.BaseSHA, baseSHA)
+		if _, e = s.withMoveInternal(r.CardID, to, "system/sync", note, map[string]any{"stale": true, "base_sha": baseSHA, "base_sync_pending": false, "claimed_at": nil, "claimed_by": nil}); e != nil {
 			return nil, e
 		}
 		marked = append(marked, r.CardID)

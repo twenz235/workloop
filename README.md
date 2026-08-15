@@ -51,8 +51,15 @@ Groom → Linear Backlog + loop:ready → Todo → Dev → PR → QA → merge t
   transition are flushed immediately; the periodic sync repairs missed remote
   updates and refreshes anything changed in Linear.
 - Dev works in an isolated `loop/<card-id>` branch and opens a PR to `dev`.
+- Before each Dev attempt, Workloop fetches `origin/dev`; new branches start at
+  `refs/remotes/origin/dev`, and existing clean branches merge that ref without
+  rebasing. Dirty or conflicted worktrees stay intact and return to Dev for
+  safe resolution.
 - QA checks the exact head SHA without modifying it.
-- Workloop merges only after QA and GitHub checks pass.
+- Workloop admits a Dev result to In Review only when the worktree is clean,
+  the reported head matches the PR, and the latest `origin/dev` is an ancestor.
+  QA also rechecks the base before merge and records the actual passing check
+  names.
 - Workloop never deploys or promotes code to another environment.
 
 ## Requirements
@@ -111,7 +118,7 @@ Or install the idempotent macOS user LaunchAgent:
 loopctl startup enable
 ```
 
-Startup performs an immediate sync and then polls every 300 seconds by default. Change the interval within 60–3600 seconds:
+Startup performs an immediate sync and then polls every 300 seconds by default. A confirmed Done transition also triggers one immediate full sync; other polling uses the configured interval. Change the interval within 60–3600 seconds:
 
 ```bash
 loopctl config set linear.sync_interval_sec 300

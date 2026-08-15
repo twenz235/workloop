@@ -385,12 +385,13 @@ func PatternsOverlap(a, b []string) bool
 - internal subcommand `loopctl runner` เป็น unified adapter ตัวเดียวรองรับ provider `codex` และ `claude`; ห้ามสร้าง adapter executable แยก. เลือก provider ด้วย config/argv ไม่สร้าง protocol แยก. Envelope, result schema, exit code, security และ retry semantics ต้องเหมือนกันทั้งสอง provider
 - รูปแบบ argv ตายตัวคือ `[<loopctl executable>, "runner", "--provider", <codex|claude>, "--role", <dev|qa>]`; `runner` เป็น internal/debug command จึงไม่แสดงใน top-level help แต่ `loopctl runner --help` ต้องใช้งานได้
 - `runner.provider` อนุญาต `codex|claude`; `provider_path` เป็น absolute path ของ CLI ที่ `init` resolve ด้วย `exec.LookPath` แล้ว canonicalize. เปลี่ยน provider มีผลเฉพาะ attempt ใหม่ ห้ามสลับ provider กลาง attempt. `init` และ `start` ต้องตรวจว่า provider CLI ที่เลือกมีอยู่จริง
-- Supervisor สร้าง worktree/branch ก่อน spawn Dev: worktree อยู่ใต้ `worktree_root/<card-id>`, branch ชื่อ deterministic `loop/<card-id>` จาก `base_sha` ของ `dev`. เรียกซ้ำต้อง reuse เฉพาะเมื่อ branch/worktree ตรง card เดิม
+- Supervisor ต้อง `git fetch --no-tags origin dev` ก่อนเตรียมหรือสร้างทุก worker และใช้ `refs/remotes/origin/dev` เป็น source of truth. Dev worktree ใหม่สร้าง branch `loop/<card-id>` จาก ref นี้; worktree เดิมที่ clean และตามหลังต้อง `git merge --no-edit origin/dev` โดยห้าม rebase/reset/discard. Dirty หรือ conflict ต้องคงงานไว้, บันทึก `base_sync_pending`, และส่งให้ Dev worker แก้ต่อ
 - Runner command เป็น argv array ไม่ผ่าน shell. `loopctl` ส่ง envelope JSON versioned ทาง stdin และตั้ง environment เฉพาะ `LOOPCTL_STATE_ROOT`, `LOOPCTL_CARD_ID`, `LOOPCTL_ROLE`; ห้ามส่ง token
-- Dev envelope มี card snapshot, contract hash, repo/worktree, branch/base SHA และ output path. Dev แก้ได้เฉพาะ worktree นี้ รัน verification, commit/push และเปิด PR เข้า `dev`
+- Dev envelope มี card snapshot, contract hash, repo/worktree, branch, `base_ref`, base SHA, base-sync note และ output path. ก่อนรายงาน completed ต้อง fetch/merge `origin/dev`, resolve conflict, rerun verification หลัง merge, commit/push และรายงาน `base_sha`/`head_sha` ใหม่; เปิดหรืออัปเดต PR เข้า `dev`
 - QA ใช้ review worktree detached ที่ tested PR head SHA; read-only ต่อ source. หากต้องแก้โค้ดต้องคืน rework ห้าม commit/push
-- Runner เขียนผลแบบ atomic ไป `journal/workers/<card-id>/<attempt>.result.json` ตาม schema `{version,card_id,role,outcome,evidence,branch,pr,head_sha,error}` แล้ว exit `0=completed`, `2=invalid task`, `10=retryable`, `11=needs attention`. stdout/stderr เป็น log เท่านั้น ไม่ใช่ state
+- Runner เขียนผลแบบ atomic ไป `journal/workers/<card-id>/<attempt>.result.json` ตาม schema `{version,card_id,role,outcome,evidence,branch,pr,base_sha,head_sha,error}` แล้ว exit `0=completed`, `2=invalid task`, `10=retryable`, `11=needs attention`. stdout/stderr เป็น log เท่านั้น ไม่ใช่ state
 - Supervisor เชื่อผลลัพธ์ต่อเมื่อ card id, role, attempt และ SHA ตรงกับ runtime record; จากนั้นจึงเรียก transition CLI. ผลลัพธ์ซ้ำต้อง idempotent
+- ก่อนย้าย Dev เป็น `In Review` supervisor fetch ซ้ำและ hard-gate worktree clean, `HEAD == PR head`, `origin/dev` เป็น ancestor และผล verification ใช้ base SHA ล่าสุด. ไม่ผ่านให้ retry พร้อม note; ครบ attempts ให้ `needs_attention`
 - `stop` ส่ง SIGTERM ให้ runner หลังหยุด claim ใหม่, รอ `stop_grace_sec`, แล้วปล่อย process ที่ยังไม่จบให้ reconcile จาก result/Git; ห้าม SIGKILL อัตโนมัติ
 
 #### `loopctl startup enable|disable`
@@ -458,9 +459,9 @@ sync ต้อง idempotent ด้วย `linear_issue_uuid` และ durable 
 เก็บกวาด execution phase claim ที่ค้าง:
 - `dev`: `claimed_at` เก่ากว่า `claim_stale_min` → ไปดูความจริงที่ runner result/Git:
   - ไม่มี branch และไม่มี diff → บันทึก phase `todo` (`attempts++`)
-  - มี branch + diff ครบ → บันทึก phase `in_review` ถ้ามี PR แล้ว ไม่งั้น `needs_attention`
-  - diff ครึ่ง ๆ กลาง ๆ → `needs_attention` **อย่าเดาว่า worker ตั้งใจอะไร**
-- `qa`: stale claim แล้ว PR ยังเปิด/head เดิม → คืน `in_review` (`attempts++`); head เปลี่ยน → `in_review(stale)`; PR merged → `sync-done`; PR closed/unresolvable → `needs_attention`
+  - มี branch + diff ครบ → ตรวจ base sync/PR head ก่อน `in_review`; ไม่ผ่านให้ retry หรือ `needs_attention`
+  - dirty/conflicted หรือ base เก่า → คง worktree ไว้และ `needs_attention` พร้อมเหตุผล **อย่าเดาว่า worker ตั้งใจอะไร**
+- `qa`: fetch `origin/dev` ก่อนเริ่มและก่อน merge; stale claim หรือ base/head เปลี่ยน → คืน `in_review(stale)`; PR merged → `sync-done`; PR closed/unresolvable → `needs_attention`
 - role ใดที่ `attempts ≥ max_attempts` → execution phase `needs_attention`; ทุกทางต้องคง reservation หาก PR/branch ยัง active
 
 #### `loopctl status --role dev|qa`
@@ -511,7 +512,7 @@ sync ต้อง idempotent ด้วย `linear_issue_uuid` และ durable 
 
 #### `loopctl qa-merge ID --by qa/WORKER`
 happy path หลัง QA ผ่าน:
-- ตรวจ card อยู่ `claimed-qa`, base เท่ากับ `dev`, PR head SHA ตรง `tested_head_sha` ที่ QA ตรวจ, ไม่ stale/spec_changed, acceptance evidence ครบ และทุก check ที่ `gh pr checks --json name,state,bucket,link` คืนมาต้อง `bucket=pass`; ชื่อ checks ที่ผ่านเก็บใน merge receipt และต้องไม่มี blocking finding
+- ตรวจ card อยู่ `claimed-qa`, base เท่ากับ `dev`, `origin/dev` ล่าสุดตรงกับ base ที่ QA ตรวจ, PR head SHA ตรง `tested_head_sha` และรวม `origin/dev` แล้ว, ไม่ stale/spec_changed, acceptance evidence ครบ และทุก check ที่ `gh pr checks --json name,state,bucket,link` คืนมาต้อง `bucket=pass`; ชื่อ checks ที่ผ่านเก็บใน merge receipt และต้องไม่มี blocking finding
 - merge ด้วย merge commit เท่านั้น; ห้าม squash/rebase merge
 - ปฏิเสธ base `main`, `master`, release/prod/staging หรือชื่ออื่นที่ไม่ใช่ `dev` แบบ hard fail
 - merge สำเร็จแล้วเขียน durable receipt ก่อน sync Linear; retry ต้องตรวจ merged commit เดิมและห้าม merge ซ้ำ
@@ -519,9 +520,9 @@ happy path หลัง QA ผ่าน:
 
 #### `loopctl mark-stale --base-moved --merged-card ID --base-sha SHA`
 เรียกอัตโนมัติหลัง merge เข้า `dev` พร้อม merged card/touches/base SHA ใหม่:
-- mark stale เฉพาะการ์ด `in_review`/`claimed-qa` ที่ reservation `touches` overlap กับ merged card
-- claimed QA ที่ overlap ให้ยุติ attempt ปัจจุบันอย่างปลอดภัยและกลับ `in_review`; ต้อง verify ใหม่กับ base/head SHA ล่าสุด
-- การ์ดไม่ overlap ทำต่อได้ แต่ `qa-merge` ยังต้องยืนยัน PR mergeable และ required checks บน head SHA ล่าสุด
+- mark stale การ์ด `in_review`/`claimed-qa` ที่ recorded base SHA ไม่ตรงกับ `origin/dev` ล่าสุด; `touches` overlap เป็น trigger เพิ่มเติม
+- claimed QA ที่ stale ให้ยุติ attempt ปัจจุบันอย่างปลอดภัยและกลับ `in_review`; ต้อง verify ใหม่กับ base/head SHA ล่าสุด
+- การ์ดที่ไม่ stale ทำต่อได้ แต่ `qa-merge` ยังต้องยืนยัน PR head รวม `origin/dev` ล่าสุดและ named checks ผ่าน
 - ถ้าไม่ทราบ provenance/touches ของ base movement ให้ fail-safe mark ทุกการ์ด review เป็น stale
 
 #### `loopctl sync-done`
@@ -778,7 +779,7 @@ T33 Linear status ถูกลากผิดระหว่าง execution →
 T34 card A เข้า in_review แล้ว card B ที่ touches overlap ยัง claim ไม่ได้จน A merged/PR closed
 T35 non-blocking findings ถูกเก็บและ QA merge ต่อได้; retry findings ไม่เพิ่มซ้ำ
 T36 resolve บังคับ human/note และเงื่อนไข todo/rework/cancelled; ห้าม resolve เป็น done
-T37 base ขยับจาก card A → stale เฉพาะ review cards ที่ touches overlap; provenance หาย → stale ทั้งหมด
+T37 base ขยับจาก card A → stale review cards ที่ base SHA เก่า หรือ touches overlap; provenance หาย → stale ทั้งหมด
 T38 gc-worktrees ไม่ลบ active/review/rework/needs_attention worktree และลบได้หลัง merged/closed+released
 T39 kill -9 ทุก transaction phase → doctor replay intent ได้ผลเดียว ไม่มีการ์ดหาย/เดาสถานะ
 T40 fake runner รับ envelope versioned, result ซ้ำ idempotent, SHA/attempt/card mismatch ถูก reject

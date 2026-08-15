@@ -136,25 +136,26 @@ type Card struct {
 	ApprovedBy      string          `json:"approved_by"`
 	// Status is an in-memory execution phase only. Linear owns workflow state;
 	// never serialize this field into a canonical card snapshot.
-	Status        string    `json:"-"`
-	Hot           bool      `json:"hot"`
-	Attempts      int       `json:"attempts"`
-	MaxAttempts   int       `json:"max_attempts"`
-	ReworkCount   int       `json:"rework_count"`
-	MaxRework     int       `json:"max_rework"`
-	ConflictSkips int       `json:"conflict_skips"`
-	ClaimedAt     *string   `json:"claimed_at"`
-	ClaimedBy     *string   `json:"claimed_by"`
-	Worktree      *string   `json:"worktree"`
-	Branch        *string   `json:"branch"`
-	PR            any       `json:"pr"`
-	BaseSHA       *string   `json:"base_sha"`
-	TestedHeadSHA *string   `json:"tested_head_sha"`
-	Stale         bool      `json:"stale"`
-	SpecChanged   bool      `json:"spec_changed"`
-	QAFindings    []Finding `json:"qa_findings"`
-	QAEvidence    []string  `json:"qa_evidence,omitempty"`
-	History       []History `json:"history"`
+	Status          string    `json:"-"`
+	Hot             bool      `json:"hot"`
+	Attempts        int       `json:"attempts"`
+	MaxAttempts     int       `json:"max_attempts"`
+	ReworkCount     int       `json:"rework_count"`
+	MaxRework       int       `json:"max_rework"`
+	ConflictSkips   int       `json:"conflict_skips"`
+	ClaimedAt       *string   `json:"claimed_at"`
+	ClaimedBy       *string   `json:"claimed_by"`
+	Worktree        *string   `json:"worktree"`
+	Branch          *string   `json:"branch"`
+	PR              any       `json:"pr"`
+	BaseSHA         *string   `json:"base_sha"`
+	BaseSyncPending bool      `json:"base_sync_pending,omitempty"`
+	TestedHeadSHA   *string   `json:"tested_head_sha"`
+	Stale           bool      `json:"stale"`
+	SpecChanged     bool      `json:"spec_changed"`
+	QAFindings      []Finding `json:"qa_findings"`
+	QAEvidence      []string  `json:"qa_evidence,omitempty"`
+	History         []History `json:"history"`
 }
 
 type Visual struct {
