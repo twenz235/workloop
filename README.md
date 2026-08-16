@@ -42,7 +42,7 @@ eligibility.
 ## Workflow
 
 ```text
-Groom → Linear Backlog + loop:ready → Todo → Dev → PR → QA → merge to dev → Done
+Groom → Linear parent Backlog + child loop:ready → Todo → Dev → PR → QA → merge to dev → parent roll-up QA → Done
 ```
 
 - Grooming creates a complete, explicitly approved work contract.
@@ -130,7 +130,7 @@ loopctl config set linear.sync_interval_sec 300
 
 ## Grooming
 
-The included `groom` skill clarifies and scopes a request before asking for explicit approval. It automatically keeps small work as one card or turns large work into one parent plus dependency-ordered executable sub-issues, explicitly reusing an existing Linear issue as the parent when appropriate. Only sub-issues receive `loop:ready`; all cards have one `type:*` label, a Linear project, priority, and acceptance checklist. Screenshots and diagrams can be supplied as grooming context and attached through safe HTTPS references. Normal intake is Groom → Linear → `loopctl sync`; `loopctl add` is a recovery path for validated card JSON.
+The included `groom` skill clarifies and scopes a request before asking for explicit approval. It automatically keeps small work as one card or turns large work into one parent plus dependency-ordered executable sub-issues, explicitly reusing an existing Linear issue as the parent when appropriate. A plan parent starts in Backlog without `loop:ready`; after every direct child reaches Done, `loopctl sync` automatically adds `loop:ready`, moves the parent to In Review, and schedules a PR-free roll-up QA pass against the integrated `origin/dev`. All executable cards have one `type:*` label, a Linear project, priority, and acceptance checklist. Screenshots and diagrams can be supplied as grooming context and attached through safe HTTPS references. Normal intake is Groom → Linear → `loopctl sync`; `loopctl add` is a recovery path for validated card JSON.
 
 ## Operations
 

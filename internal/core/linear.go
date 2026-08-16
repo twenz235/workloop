@@ -31,6 +31,7 @@ type linearIssue struct {
 	Labels                                                        []string
 	Priority                                                      int
 	ProjectID, ProjectName, ParentID                              string
+	PlanParent, PlanChildrenComplete                              bool
 }
 
 type reusableLinearParent struct {
@@ -294,12 +295,15 @@ func (s *State) promoteApprovedLinearIssue(ctx context.Context, client *linearCl
 	if containsString(issue.Labels, s.Config.Linear.ReadyLabel) || containsString(issue.Labels, s.Config.Linear.NeedsAttentionLabel) {
 		return false, nil
 	}
+	if issue.PlanParent && !issue.PlanChildrenComplete {
+		return false, nil
+	}
 	if issue.StateName == "Canceled" || issue.StateName == "Cancelled" || issue.StateName == "Duplicate" || issue.StateName == s.Config.Linear.StatusMap["done"] {
 		return false, nil
 	}
 	// parseLoopCard validates the complete Definition of Ready, including the
-	// approval audit fields. A plan parent has no loop-card and therefore can
-	// never be promoted by this repair path.
+	// approval audit fields. Plan parents receive a roll-up loop-card when the
+	// groom plan is created, but remain ineligible until every child is Done.
 	if _, err := parseLoopCard(*issue, &s.Config); err != nil {
 		return false, nil
 	}
@@ -364,6 +368,9 @@ func parseLoopCard(issue linearIssue, cfg *Config) ([]byte, error) {
 	raw["linear_labels"] = linearLabels(issue.Labels)
 	raw["linear_updated_at"] = issue.UpdatedAt
 	raw["source_revision"] = issue.UpdatedAt
+	if issue.PlanParent {
+		raw["execution_mode"] = "rollup"
+	}
 	delete(raw, "linear_parent_id")
 	if issue.ParentID != "" {
 		raw["linear_parent_id"] = issue.ParentID
@@ -392,8 +399,9 @@ func parseLoopCard(issue linearIssue, cfg *Config) ([]byte, error) {
 
 func workTypeFromLabels(labels []string) (string, error) {
 	found := ""
-	for _, candidate := range []string{"feature", "bug", "maintenance"} {
-		if !containsString(labels, "type:"+candidate) {
+	for _, label := range labels {
+		candidate := canonicalWorkTypeLabel(label)
+		if candidate == "" {
 			continue
 		}
 		if found != "" {
@@ -405,6 +413,22 @@ func workTypeFromLabels(labels []string) (string, error) {
 		return "", E(2, "must have one of type:feature, type:bug or type:maintenance")
 	}
 	return found, nil
+}
+
+// Linear workspaces created before Workloop used labels such as "Feature"
+// and "Bug". Keep those cards importable while preferring the explicit
+// type:* labels created by GroomCreate.
+func canonicalWorkTypeLabel(label string) string {
+	switch strings.ToLower(strings.TrimSpace(label)) {
+	case "type:feature", "feature", "feat":
+		return "feature"
+	case "type:bug", "bug":
+		return "bug"
+	case "type:maintenance", "maintenance":
+		return "maintenance"
+	default:
+		return ""
+	}
 }
 func deriveCardID(identifier, uuid string) string {
 	id := strings.ToLower(identifier)
@@ -595,6 +619,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 		return nil, E(8, "Linear sync failed: %v", err)
 	}
 	issues = orderLinearIssuesByDependencies(issues)
+	annotatePlanParents(issues, s.Config.Linear.StatusMap["done"])
 	issueStates := map[string]string{}
 	for _, issue := range issues {
 		issueStates[issue.ID] = issue.StateName
@@ -614,6 +639,7 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 		return nil, E(8, "Linear status lookup failed: %v", err)
 	}
 	readyLabelID := ""
+	inReviewStateID := ""
 	for _, issue := range issues {
 		cards, cardsErr := s.AllCards()
 		if cardsErr != nil {
@@ -638,6 +664,9 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 				}
 				if promoted {
 					autoReady = appendUniqueIdentifier(autoReady, issue.Identifier)
+				}
+				if err := s.ensurePlanParentInReview(ctx, client, &issue, &inReviewStateID); err != nil {
+					return nil, err
 				}
 			}
 			metadataChanged, metadataErr := s.syncLinearMetadata(existing.Card.ID, issue)
@@ -731,6 +760,9 @@ func (s *State) Sync(ctx context.Context) (map[string]any, error) {
 		}
 		if promoted {
 			autoReady = appendUniqueIdentifier(autoReady, issue.Identifier)
+		}
+		if err := s.ensurePlanParentInReview(ctx, client, &issue, &inReviewStateID); err != nil {
+			return nil, err
 		}
 		ready := containsString(issue.Labels, s.Config.Linear.ReadyLabel)
 		isCancelled := issue.StateName == "Canceled" || issue.StateName == "Cancelled" || issue.StateName == "Duplicate"
@@ -1232,7 +1264,7 @@ func (s *State) GroomCreate(ctx context.Context, data []byte, approvedBy string)
 	delete(raw, "linear_url")
 	delete(raw, "source_revision")
 	delete(raw, "contract_hash")
-	for _, k := range []string{"status", "hot", "attempts", "max_attempts", "rework_count", "max_rework", "conflict_skips", "claimed_at", "claimed_by", "worktree", "branch", "pr", "base_sha", "tested_head_sha", "stale", "spec_changed", "qa_findings", "qa_evidence", "qa_acceptance_results", "proposed", "history"} {
+	for _, k := range []string{"status", "hot", "attempts", "max_attempts", "rework_count", "max_rework", "conflict_skips", "claimed_at", "claimed_by", "worktree", "branch", "pr", "base_sha", "tested_head_sha", "stale", "spec_changed", "qa_findings", "qa_evidence", "qa_acceptance_results", "execution_mode", "proposed", "history"} {
 		delete(raw, k)
 	}
 	cardBlock, _ := json.MarshalIndent(raw, "", "  ")

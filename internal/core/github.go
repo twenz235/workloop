@@ -219,6 +219,22 @@ func (s *State) QAMerge(ctx context.Context, id, by string) (map[string]any, err
 	if err := s.publishQAReport(ctx, id); err != nil {
 		return nil, err
 	}
+	if card.ExecutionMode == "rollup" {
+		// A roll-up parent has no PR. Its tested head is the exact origin/dev
+		// snapshot that QA inspected; sync-done will perform the guarded local
+		// transition after confirming that the snapshot has not moved.
+		latestBaseSHA, err := fetchOriginDev(ctx, s.Config.RepoPath)
+		if err != nil {
+			return nil, fmt.Errorf("QA base freshness check failed before roll-up completion: %w", err)
+		}
+		if card.BaseSHA == nil || *card.BaseSHA != latestBaseSHA {
+			return nil, E(2, "dev base changed during QA: tested %v, current origin/dev %s", card.BaseSHA, latestBaseSHA)
+		}
+		if card.TestedHeadSHA == nil || *card.TestedHeadSHA != latestBaseSHA {
+			return nil, E(2, "roll-up tested head does not match current origin/dev")
+		}
+		return s.writeMergeReceipt(id, 0, latestBaseSHA, latestBaseSHA, by, nil)
+	}
 	n, err := prNumber(card.PR)
 	if err != nil {
 		return nil, E(2, "%v", err)
@@ -284,6 +300,9 @@ func (s *State) QAMerge(ctx context.Context, id, by string) (map[string]any, err
 
 func (s *State) writeMergeReceipt(id string, n int, mergeSHA, headSHA, by string, checks []string) (map[string]any, error) {
 	receipt := map[string]any{"card_id": id, "pr": n, "base": "dev", "merge_sha": mergeSHA, "tested_head_sha": headSHA, "by": by, "merged_at": Now()}
+	if n == 0 {
+		receipt["kind"] = "rollup"
+	}
 	if len(checks) > 0 {
 		receipt["checks"] = checks
 	}
@@ -321,6 +340,7 @@ func (s *State) SyncDone(ctx context.Context) (map[string]any, error) {
 		var receipt struct {
 			MergeSHA      string `json:"merge_sha"`
 			TestedHeadSHA string `json:"tested_head_sha"`
+			Kind          string `json:"kind"`
 		}
 		receiptData, e := os.ReadFile(filepath.Join(dir, ent.Name()))
 		if e != nil || json.Unmarshal(receiptData, &receipt) != nil {
@@ -331,6 +351,26 @@ func (s *State) SyncDone(ctx context.Context) (map[string]any, error) {
 			continue
 		}
 		if status == "done" {
+			continue
+		}
+		if receipt.Kind == "rollup" {
+			if receipt.MergeSHA == "" || receipt.TestedHeadSHA == "" || receipt.MergeSHA != receipt.TestedHeadSHA {
+				return nil, E(7, "invalid roll-up receipt for %s", id)
+			}
+			latestBaseSHA, fetchErr := fetchOriginDev(ctx, s.Config.RepoPath)
+			if fetchErr != nil {
+				return nil, fmt.Errorf("roll-up base confirmation failed for %s: %w", id, fetchErr)
+			}
+			if latestBaseSHA != receipt.TestedHeadSHA {
+				return nil, E(7, "roll-up base moved after QA for %s", id)
+			}
+			if _, e = s.withMoveInternal(id, "done", "qa/sync-done", "Parent roll-up QA confirmed on origin/dev", map[string]any{"claimed_at": nil, "claimed_by": nil}); e != nil {
+				return nil, e
+			}
+			if e = s.releaseReservation(id); e != nil {
+				return nil, e
+			}
+			done = append(done, id)
 			continue
 		}
 		n, e := prNumber(card.PR)

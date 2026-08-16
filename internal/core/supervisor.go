@@ -220,6 +220,23 @@ func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnv
 		if err != nil {
 			return RunnerEnvelope{}, err
 		}
+	} else if c.ExecutionMode == "rollup" {
+		// Parent roll-up QA verifies the integrated dev branch directly. There
+		// is intentionally no PR/branch to inspect for this execution mode.
+		headSHA = baseSHA
+		worktree = filepath.Join(s.Config.WorktreeRoot, id+"-qa")
+		if _, err := os.Stat(worktree); errors.Is(err, os.ErrNotExist) {
+			if _, e := gitRun(ctx, s.Config.RepoPath, "worktree", "add", "--detach", worktree, headSHA); e != nil {
+				return RunnerEnvelope{}, e
+			}
+		} else if headNow := gitOutput(worktree, "rev-parse", "HEAD"); headNow != headSHA {
+			if out, e := exec.CommandContext(ctx, "git", "-C", s.Config.RepoPath, "worktree", "remove", worktree).CombinedOutput(); e != nil {
+				return RunnerEnvelope{}, E(8, "stale roll-up QA worktree removal failed: %s", out)
+			}
+			if out, e := exec.CommandContext(ctx, "git", "-C", s.Config.RepoPath, "worktree", "add", "--detach", worktree, headSHA).CombinedOutput(); e != nil {
+				return RunnerEnvelope{}, E(8, "roll-up QA worktree refresh failed: %s", out)
+			}
+		}
 	} else {
 		n, err := prNumber(c.PR)
 		if err != nil {
@@ -245,7 +262,7 @@ func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnv
 		}
 	}
 	recordedBaseSHA := any(baseSHA)
-	if role == "qa" && (c.BaseSHA == nil || *c.BaseSHA != baseSHA) {
+	if role == "qa" && c.ExecutionMode != "rollup" && (c.BaseSHA == nil || *c.BaseSHA != baseSHA) {
 		// Keep the previously tested base in the card until finishWorker can
 		// atomically mark this QA attempt stale. Do not let preparation hide a
 		// base movement by replacing the evidence before the freshness gate runs.
@@ -267,7 +284,7 @@ func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnv
 	}
 	cardData, _ := json.Marshal(raw)
 	output := filepath.Join(s.Root, "journal", "workers", id, fmt.Sprintf("%d.result.json", attempt))
-	return RunnerEnvelope{Version: 1, CardID: id, Role: role, Attempt: attempt, Provider: s.Config.Runner.Provider, ProviderPath: s.Config.Runner.ProviderPath, StateRoot: s.Root, Worktree: worktree, Branch: branch, BaseRef: c.Base, BaseSHA: baseSHA, BaseSyncPending: baseSyncPending, BaseSyncNote: baseSyncNote, HeadSHA: headSHA, ContractHash: c.ContractHash, OutputPath: output, Card: cardData}, nil
+	return RunnerEnvelope{Version: 1, CardID: id, Role: role, Attempt: attempt, Provider: s.Config.Runner.Provider, ProviderPath: s.Config.Runner.ProviderPath, StateRoot: s.Root, Worktree: worktree, Branch: branch, BaseRef: c.Base, BaseSHA: baseSHA, BaseSyncPending: baseSyncPending, BaseSyncNote: baseSyncNote, HeadSHA: headSHA, ExecutionMode: c.ExecutionMode, ContractHash: c.ContractHash, OutputPath: output, Card: cardData}, nil
 }
 
 func (s *State) verifyDevReviewGate(ctx context.Context, id string, card *Card, reportedBaseSHA, reportedHeadSHA string) (string, error) {

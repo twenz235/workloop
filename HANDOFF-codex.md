@@ -545,7 +545,7 @@ happy path หลัง QA ผ่าน:
 | requirement, acceptance, out-of-scope, priority, approval, labels, project, parent/child, board status | Linear | local เก็บ snapshot + revision; ห้ามแก้ requirement กลับอัตโนมัติ |
 | claim, worker, retry, rework, conflict, recovery | filesystem | ไม่ใช่ board; Linear แสดงเฉพาะ state/label summary ที่จำเป็น |
 | branch, PR head SHA, CI/merge receipt | Git/GitHub | card และ Linear เก็บ reference |
-| Done | GitHub merged-to-`dev` fact | local/Linear สะท้อนผล |
+| Done | GitHub merged-to-`dev` fact หรือ parent roll-up QA receipt ที่ยืนยัน `origin/dev` snapshot | local/Linear สะท้อนผล |
 
 Linear status mapping ตายตัวตาม category/name ที่ resolve ตอน `init`. Linear snapshot เป็น board truth; outbound mirror เกิดเฉพาะ lifecycle transition ที่ Workloop ตั้งใจทำ ไม่ใช่การยืนยัน local phase:
 
@@ -568,9 +568,9 @@ Linear status mapping ตายตัวตาม category/name ที่ resolv
 
 `/groom` ทำงานเป็นสอง phase:
 1. **Draft:** รับโจทย์, อ่าน docs/source แบบ read-only, ถามเฉพาะ ambiguity, ประเมิน risk/size, แตกการ์ด และสร้าง preview. ยังไม่สร้าง external change เว้นแต่ผู้ใช้ขอ save draft
-2. **Approve:** เมื่อผู้ใช้ยืนยัน explicit จึง create/update Linear issues, เชื่อม parent/dependency, ใส่ `loop-card` และ `loop:ready` เฉพาะใบ executable; คืน URL ทุกใบและลำดับ execution
+2. **Approve:** เมื่อผู้ใช้ยืนยัน explicit จึง create/update Linear issues, เชื่อม parent/dependency, ใส่ `loop-card` และ `loop:ready` ให้ใบ executable; parent ของ plan ได้ roll-up `loop-card` แต่รอ child ครบก่อนรับ `loop:ready`; คืน URL ทุกใบและลำดับ execution
 
-ถ้างานใหญ่ `/groom` ต้องสร้าง plan เดียวที่มี parent ไม่เข้า execution และ sub-issues 2–20 ใบที่ผ่าน DoR แยกกัน. ใช้ `loopctl groom --plan-file <plan.json> --approved-by <id>`; CLI validate graph ทั้งก้อนก่อน write, สร้าง parent ก่อน, สร้าง sub-issues ตาม topological order, resolve `depends_on_keys` เป็น Linear UUID และใช้ deterministic operation IDs เพื่อ resume หลัง partial failure โดยไม่สร้างซ้ำ. ห้ามผลักภาระการแตกงานให้ผู้ใช้เมื่อระบบอนุมานขอบเขตได้เอง
+ถ้างานใหญ่ `/groom` ต้องสร้าง plan เดียวที่มี parent roll-up และ sub-issues 2–20 ใบที่ผ่าน DoR แยกกัน. ใช้ `loopctl groom --plan-file <plan.json> --approved-by <id>`; CLI validate graph ทั้งก้อนก่อน write, สร้าง parent ก่อน, สร้าง sub-issues ตาม topological order, resolve `depends_on_keys` เป็น Linear UUID และใช้ deterministic operation IDs เพื่อ resume หลัง partial failure โดยไม่สร้างซ้ำ. Parent อยู่ Backlog โดยไม่มี `loop:ready` ระหว่าง child ยังไม่ครบ; เมื่อ child โดยตรงทุกใบเป็น Done, sync จะติด `loop:ready`, ย้าย parent เข้า In Review และให้ QA ตรวจ roll-up บน `origin/dev` โดยไม่ต้องมี PR ก่อน `sync-done` ปิด parent. ห้ามผลักภาระการแตกงานให้ผู้ใช้เมื่อระบบอนุมานขอบเขตได้เอง
 
 ต้องรองรับผลลัพธ์สามแบบ:
 - `ready`: ผ่าน DoR และผู้ใช้ยืนยัน → Backlog + `loop:ready`
@@ -609,13 +609,13 @@ Linear status mapping ตายตัวตาม category/name ที่ resolv
 ## 8. Transition ที่อนุญาต
 
 ```
-(groom approved)→ Linear Backlog + loop:ready
+(groom approved)→ Linear Backlog + loop:ready (executable) / roll-up parent waits for children
 (sync)         → todo
 todo           → claimed-dev | blocked          [dev]
 rework         → claimed-dev                    [dev]
 claimed-dev    → in_review | needs_attention | todo(คืน) | blocked   [dev]
 in_review      → claimed-qa                     [qa]
-claimed-qa     → rework | in_review(stale) | needs_attention | done(qa-merge + sync-done) [qa]
+claimed-qa     → rework | in_review(stale) | needs_attention | done(receipt + sync-done; PR or roll-up) [qa]
 needs_attention→ todo | rework | cancelled      [resolve โดยคนเท่านั้น]
 needs_attention→ in_review                    [qa-retry โดยคนเท่านั้น]
 blocked        → todo                           [ระบบอัตโนมัติเมื่อ dependency done]

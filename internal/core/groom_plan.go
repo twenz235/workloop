@@ -49,7 +49,7 @@ func (s *State) GroomPlanCreate(ctx context.Context, data []byte, approvedBy str
 
 	waves := planExecutionWaves(order, cards, s.Config.HotPaths)
 	if parentResult == nil {
-		parentResult, err = s.createPlanParent(ctx, planID, parent, order, cards)
+		parentResult, err = s.createPlanParent(ctx, planID, parent, order, cards, approvedBy)
 		if err != nil {
 			return nil, err
 		}
@@ -294,7 +294,7 @@ func (s *State) reusePlanParent(ctx context.Context, client *linearClient, paren
 	return map[string]any{"id": issue.ID, "identifier": issue.Identifier, "title": issue.Title, "url": issue.URL, "status": issue.StateName, "reused": true}, nil
 }
 
-func (s *State) createPlanParent(ctx context.Context, planID string, parent map[string]any, order []string, cards map[string]map[string]any) (map[string]any, error) {
+func (s *State) createPlanParent(ctx context.Context, planID string, parent map[string]any, order []string, cards map[string]map[string]any, approvedBy string) (map[string]any, error) {
 	client, err := s.linearClient()
 	if err != nil {
 		return nil, err
@@ -313,7 +313,11 @@ func (s *State) createPlanParent(ctx context.Context, planID string, parent map[
 		return nil, E(8, "Linear work type label lookup failed: %v", err)
 	}
 	acceptance := interfaceSlice(parent["acceptance"])
-	description := fmt.Sprintf("## Problem\n%s\n\n## Desired outcome\n%s\n\n## Acceptance criteria\n%s%s\n\n## Execution plan\n%s\n\n<!-- workloop-plan:%s -->", safeHumanMarkdown(fmt.Sprint(parent["problem"])), safeHumanMarkdown(fmt.Sprint(parent["desired_outcome"])), markdownChecklist(acceptance), markdownVisuals(parent["visuals"]), planCardChecklist(order, cards), planID)
+	rollupBlock, err := rollupParentBlock(&s.Config, parent, cards, approvedBy)
+	if err != nil {
+		return nil, E(2, "plan parent roll-up contract failed: %v", err)
+	}
+	description := fmt.Sprintf("## Problem\n%s\n\n## Desired outcome\n%s\n\n## Acceptance criteria\n%s%s\n\n## Execution plan\n%s\n\nThe parent is verified automatically after all child issues reach Done. QA runs the roll-up acceptance criteria against the integrated origin/dev snapshot; no parent PR is required.\n\n```loop-card\n%s\n```\n\n<!-- workloop-plan:%s -->", safeHumanMarkdown(fmt.Sprint(parent["problem"])), safeHumanMarkdown(fmt.Sprint(parent["desired_outcome"])), markdownChecklist(acceptance), markdownVisuals(parent["visuals"]), planCardChecklist(order, cards), rollupBlock, planID)
 	priority, _ := integerValue(parent["priority"])
 	input := map[string]any{"id": planID, "teamId": s.Config.Linear.TeamID, "title": parent["title"], "description": description, "stateId": backlogID, "labelIds": []string{typeLabelID}, "projectId": parent["linear_project_id"], "priority": priority}
 	const q = `mutation CreateGroomParent($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier title url state { name } } } }`

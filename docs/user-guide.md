@@ -90,7 +90,7 @@ Claude Code may use `/groom` instead. The skill will clarify missing requirement
 
 You may provide screenshots or diagrams while grooming. The skill inspects them, turns relevant observations into textual requirements, and includes safe HTTPS visual references in the issue. When the connected Linear tool supports file upload, it can first upload a local image to Linear's private storage. Local file paths, base64 payloads, and secret-bearing URLs are never written into a card.
 
-For large work, you do not need to split cards yourself. Groom automatically creates one parent issue describing the overall outcome and 2–20 executable sub-issues. If you are splitting an existing Linear issue, Groom reuses that issue explicitly instead of creating a duplicate parent. It assigns dependencies, shows the execution waves and create/reuse choice in one preview, and asks for approval once. The parent remains in Backlog without `loop:ready`; each complete sub-issue receives `loop:ready` and is imported independently by Workloop. If an idempotent resume finds an approved child without the label, Groom restores it; sync also repairs the label from a valid approved loop-card. If Linear fails partway through creation, rerunning the same approved plan resumes from deterministic IDs without duplicating completed issues.
+For large work, you do not need to split cards yourself. Groom automatically creates one parent issue describing the overall outcome and 2–20 executable sub-issues. If you are splitting an existing Linear issue, Groom reuses that issue explicitly instead of creating a duplicate parent. It assigns dependencies, shows the execution waves and create/reuse choice in one preview, and asks for approval once. The parent remains in Backlog without `loop:ready` while children run; each complete sub-issue receives `loop:ready` and is imported independently by Workloop. When every direct child reaches Done, sync automatically adds `loop:ready` to the parent, moves it to In Review, and runs a PR-free roll-up QA pass against integrated `origin/dev`; only the receipt-backed sync-done path closes the parent. If an idempotent resume finds an approved child without the label, Groom restores it; sync also repairs the label from a valid approved loop-card. If Linear fails partway through creation, rerunning the same approved plan resumes from deterministic IDs without duplicating completed issues.
 
 The normal intake path is:
 
@@ -163,6 +163,11 @@ The usual Linear board lifecycle is:
 
 ```text
 Backlog + loop:ready → Todo → In Progress → In Review → Done
+
+For a groom plan, the parent follows the automatic tail: all direct children
+must be Done first, then sync promotes the parent to In Review; QA verifies the
+parent acceptance criteria on `origin/dev` without a PR, and `sync-done` closes
+it from its receipt.
 ```
 
 The private runtime may record execution phases such as `claimed-dev`,
