@@ -463,6 +463,31 @@ func TestRetryQAReturnsNeedsAttentionToInReviewWithFreshEvidence(t *testing.T) {
 	}
 }
 
+func TestRetryQARollupDoesNotRequirePR(t *testing.T) {
+	s := testState(t)
+	addTestCard(t, s, "qa-retry-rollup", []string{"qa-retry-rollup.go"})
+	if _, err := s.PatchInternal("qa-retry-rollup", map[string]any{
+		"execution_mode":        "rollup",
+		"qa_evidence":           []string{"old evidence"},
+		"qa_acceptance_results": []AcceptanceResult{{CriterionIndex: 1, Status: "passed", Evidence: "old evidence"}},
+	}, "seed rollup QA state"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.withMoveInternal("qa-retry-rollup", "needs_attention", "qa/supervisor", "temporary QA provider failure", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RetryQA("qa-retry-rollup", "human/alice", "retry roll-up QA after parser fix"); err != nil {
+		t.Fatal(err)
+	}
+	status, _, card, err := s.ReadCard("qa-retry-rollup")
+	if err != nil || status != "in_review" {
+		t.Fatalf("status=%q card=%+v err=%v", status, card, err)
+	}
+	if len(card.QAEvidence) != 0 || len(card.QAAcceptanceResults) != 0 {
+		t.Fatalf("retry must clear stale QA evidence: %+v", card)
+	}
+}
+
 func TestBaseSyncRetryWritesActionableLinearComment(t *testing.T) {
 	note := "base sync gate failed: origin/dev moved after verification"
 	if !linearCommentNeeded("claimed-dev", "todo", "dev/supervisor", note) {

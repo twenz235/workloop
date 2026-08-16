@@ -282,12 +282,14 @@ loopctl resolve eng-123 --to rework --by human/alice \
 loopctl qa-retry CARD_ID --by human/ID --note TEXT
 ```
 
-Returns a `needs_attention` card with an existing PR to `In Review` so QA can
-claim it again. The human note is required and is mirrored to Linear as an
-audit comment. The command refuses changed contracts and unresolved blocking
-QA findings; use `resolve --to rework` when Dev must fix the PR first. Previous
-QA evidence is cleared, while stale facts remain until the next QA run proves
-the current head and base again.
+Returns a `needs_attention` card to `In Review` so QA can claim it again. A
+standard card must have an existing PR; an automatic parent roll-up card has
+no PR and is retried against the current `origin/dev` snapshot. The human
+note is required and is mirrored to Linear as an audit comment. The command
+refuses changed contracts and unresolved blocking QA findings; use
+`resolve --to rework` when Dev must fix the PR first. Previous QA evidence is
+cleared, while stale facts remain until the next QA run proves the current
+head and base again.
 
 ```bash
 loopctl qa-retry eng-123 --by human/alice \
