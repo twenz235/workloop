@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const Version = "0.2.7"
+const Version = "0.2.8"
 
 var cardIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 var workerIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -118,6 +118,7 @@ type Card struct {
 	DependsOn       []string        `json:"depends_on"`
 	Priority        int             `json:"priority"`
 	WorkType        string          `json:"work_type,omitempty"`
+	ExecutionMode   string          `json:"execution_mode,omitempty"`
 	LinearProjectID string          `json:"linear_project_id,omitempty"`
 	LinearProject   string          `json:"linear_project,omitempty"`
 	LinearParentID  string          `json:"linear_parent_id,omitempty"`
@@ -261,6 +262,9 @@ func ValidateCard(c *Card, cfg *Config) error {
 	}
 	if c.Base != "dev" {
 		return E(2, "base must be dev")
+	}
+	if c.ExecutionMode != "" && c.ExecutionMode != "standard" && c.ExecutionMode != "rollup" {
+		return E(2, "execution_mode must be standard or rollup")
 	}
 	if c.Tier != "L0" && c.Tier != "L1" && c.Tier != "L2" {
 		return E(2, "tier must be L0, L1 or L2")

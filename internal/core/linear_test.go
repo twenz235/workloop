@@ -145,6 +145,58 @@ func TestLinearSyncRestoresReadyFromApprovedCard(t *testing.T) {
 	}
 }
 
+func TestLinearSyncAutomaticallyPromotesCompletedPlanParent(t *testing.T) {
+	s := testState(t)
+	t.Setenv("LINEAR_API_TOKEN", "linear-rollup-secret")
+	s.Config.Linear.Endpoint = "https://linear.test/graphql"
+	parentDescription := fmt.Sprintf("## Acceptance criteria\n- [ ] integrated behavior works\n\n```loop-card\n{\"problem\":\"p\",\"desired_outcome\":\"o\",\"out_of_scope\":[\"child implementation\"],\"repo\":%q,\"repo_path\":%q,\"base\":\"dev\",\"tier\":\"L2\",\"touches\":[\"apps/api/**\"],\"acceptance\":[\"integrated behavior works\"],\"verification\":[\"go test ./...\"],\"depends_on\":[],\"risk\":{\"level\":\"medium\"},\"rollback_notes\":\"revert child changes\",\"approved_at\":\"2026-08-15T00:00:00Z\",\"approved_by\":\"human/teerapad\"}\n```", s.Config.Repo, s.Config.RepoPath)
+	childDescription := fmt.Sprintf("```loop-card\n{\"problem\":\"child\",\"desired_outcome\":\"done\",\"out_of_scope\":[\"other\"],\"repo\":%q,\"repo_path\":%q,\"base\":\"dev\",\"tier\":\"L1\",\"touches\":[\"apps/api/foo.go\"],\"acceptance\":[\"works\"],\"verification\":[\"go test ./...\"],\"depends_on\":[],\"risk\":{\"level\":\"low\"},\"rollback_notes\":\"revert\",\"approved_at\":\"2026-08-15T00:00:00Z\",\"approved_by\":\"human/teerapad\"}\n```", s.Config.Repo, s.Config.RepoPath)
+	readyAdds := 0
+	stateMoves := 0
+	oldClient := defaultLinearHTTPClient
+	defaultLinearHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		query := string(body)
+		var response string
+		switch {
+		case strings.Contains(query, "TeamStates"):
+			response = `{"data":{"team":{"states":{"nodes":[{"id":"backlog-id","name":"Backlog"},{"id":"todo-id","name":"Todo"},{"id":"review-id","name":"In Review"},{"id":"done-id","name":"Done"}]}}}}`
+		case strings.Contains(query, "TeamLabels"):
+			response = `{"data":{"team":{"labels":{"nodes":[{"id":"ready-id","name":"loop:ready"}]}}}}`
+		case strings.Contains(query, "AddLoopLabel"):
+			readyAdds++
+			response = `{"data":{"issueAddLabel":{"success":true}}}`
+		case strings.Contains(query, "MoveLoopIssue"):
+			stateMoves++
+			response = `{"data":{"issueUpdate":{"success":true}}}`
+		case strings.Contains(query, "LoopIssues"):
+			response = fmt.Sprintf(`{"data":{"team":{"issues":{"nodes":[{"id":"parent-uuid","identifier":"FLO-P","title":"Large feature","description":%q,"url":"https://linear.test/p","updatedAt":"2026-08-15T00:00:00Z","priority":2,"state":{"name":"Backlog"},"project":{"id":"project-1","name":"Arun"},"labels":{"nodes":[{"name":"type:feature"}]}},{"id":"child-uuid","identifier":"FLO-C","title":"Child","description":%q,"url":"https://linear.test/c","updatedAt":"2026-08-15T00:00:00Z","priority":2,"state":{"name":"Done"},"project":{"id":"project-1","name":"Arun"},"parent":{"id":"parent-uuid"},"labels":{"nodes":[{"name":"loop:ready"},{"name":"type:feature"}]}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`, parentDescription, childDescription)
+		default:
+			t.Fatalf("unexpected Linear query: %s", query)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{}}, nil
+	})}
+	t.Cleanup(func() { defaultLinearHTTPClient = oldClient })
+
+	result, err := s.Sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result["auto_ready"].([]string); len(got) != 1 || got[0] != "FLO-P" {
+		t.Fatalf("auto_ready=%v result=%v", got, result)
+	}
+	if got := result["imported"].([]string); len(got) != 1 || got[0] != "FLO-P" {
+		t.Fatalf("imported=%v", got)
+	}
+	if readyAdds != 1 || stateMoves != 1 {
+		t.Fatalf("readyAdds=%d stateMoves=%d", readyAdds, stateMoves)
+	}
+	status, _, card, err := s.ReadCard("flo-p")
+	if err != nil || status != "in_review" || card.ExecutionMode != "rollup" || card.LinearState != "In Review" || !containsString(card.LinearLabels, "loop:ready") {
+		t.Fatalf("status=%q mode=%q state=%q labels=%v err=%v", status, card.ExecutionMode, card.LinearState, card.LinearLabels, err)
+	}
+}
+
 func TestLinearFailureReturnsEight(t *testing.T) {
 	s := testState(t)
 	t.Setenv("LINEAR_API_TOKEN", "x")
@@ -603,6 +655,18 @@ func TestWorkTypeRequiresExactlyOneLabel(t *testing.T) {
 	if got, err := workTypeFromLabels([]string{"loop:ready", "type:maintenance"}); err != nil || got != "maintenance" {
 		t.Fatalf("got=%q err=%v", got, err)
 	}
+	for _, sample := range []struct {
+		labels []string
+		want   string
+	}{
+		{[]string{"Feature"}, "feature"},
+		{[]string{"Bug"}, "bug"},
+		{[]string{"Maintenance"}, "maintenance"},
+	} {
+		if got, err := workTypeFromLabels(sample.labels); err != nil || got != sample.want {
+			t.Fatalf("labels=%v got=%q err=%v", sample.labels, got, err)
+		}
+	}
 }
 
 func TestHumanMarkdownCannotInjectLoopCardFence(t *testing.T) {
@@ -699,6 +763,9 @@ func TestGroomPlanCreatesParentAndOrderedSubIssues(t *testing.T) {
 	parentID := fmt.Sprint(creates[0]["id"])
 	if strings.Contains(fmt.Sprint(creates[0]["labelIds"]), "ready-id") {
 		t.Fatalf("parent must not be ready: %v", creates[0])
+	}
+	if !strings.Contains(fmt.Sprint(creates[0]["description"]), "```loop-card") || !strings.Contains(fmt.Sprint(creates[0]["description"]), `"execution_mode": "rollup"`) {
+		t.Fatalf("parent is missing automatic roll-up contract: %v", creates[0]["description"])
 	}
 	if creates[1]["title"] != "Add schema" || creates[2]["title"] != "Build API" {
 		t.Fatalf("wrong creation order: %v", creates)

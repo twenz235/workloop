@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,6 +108,54 @@ esac
 	}
 	if _, statErr := os.Stat(merged); statErr == nil {
 		t.Fatal("failing check must prevent merge")
+	}
+}
+
+func TestRollupQAMergeAndSyncDoneNeedsNoPR(t *testing.T) {
+	s := testState(t)
+	useLocalOriginFetch(t, s)
+	var raw map[string]any
+	if err := json.Unmarshal(testCard("rollup", []string{"rollup.go"}), &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["repo"] = s.Config.Repo
+	raw["repo_path"] = s.Config.RepoPath
+	raw["execution_mode"] = "rollup"
+	b, _ := json.Marshal(raw)
+	if _, err := s.Add(b, "human/test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.withMoveInternal("rollup", "in_review", "system/sync", "parent children complete", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim("qa", "q"); err != nil {
+		t.Fatal(err)
+	}
+	baseSHA := testOriginDevSHA(t, s)
+	if _, err := s.PatchInternal("rollup", map[string]any{
+		"base_sha": baseSHA, "tested_head_sha": baseSHA,
+		"qa_evidence":           []string{"all parent acceptance criteria passed"},
+		"qa_acceptance_results": []AcceptanceResult{{CriterionIndex: 1, Status: "passed", Evidence: "go test ./..."}},
+	}, "QA evidence"); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := s.QAMerge(context.Background(), "rollup", "qa/q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt["kind"] != "rollup" || receipt["pr"] != float64(0) && receipt["pr"] != 0 {
+		t.Fatalf("roll-up receipt=%v", receipt)
+	}
+	result, err := s.SyncDone(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result["done"].([]string)) != 1 {
+		t.Fatalf("result=%v", result)
+	}
+	status, _, err := s.Locate("rollup")
+	if err != nil || status != "done" {
+		t.Fatalf("status=%s err=%v", status, err)
 	}
 }
 

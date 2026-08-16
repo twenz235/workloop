@@ -28,8 +28,8 @@ Output is JSON except for help text and the long-running supervisor. Commands ma
 | `qa-retry` | user | Return an attention card to In Review for a fresh QA attempt. |
 | `reconcile` | recovery | Recover stale Dev or QA claims. |
 | `sync` | user | Import approved Linear backlog issues. |
-| `qa-merge` | internal | Merge a QA-verified PR into `dev`. |
-| `sync-done` | recovery | Confirm merged PRs and complete their cards. |
+| `qa-merge` | internal | Write a receipt for a QA-verified PR or parent roll-up. |
+| `sync-done` | recovery | Confirm receipts and complete their cards. |
 | `mark-stale` | internal | Invalidate overlapping reviews after `dev` moves. |
 | `groom` | skill/internal | Create an explicitly approved Linear backlog issue. |
 | `config` | user | Read configuration or update safe keys. |
@@ -76,7 +76,7 @@ loopctl groom --plan-file APPROVED_PLAN.json --approved-by ID
 
 Normal users should invoke `$groom` in Codex or `/groom` in Claude Code; the skill prepares the JSON and requests explicit approval before it calls this command. Optional `visuals` entries use `{alt, url, description}` with a safe HTTPS URL and appear inline in the Linear description.
 
-`--plan-file` creates or explicitly reuses one non-executable parent and creates 2–20 executable Linear sub-issues. Set `parent.mode` to `create`, or use `reuse` with `linear_issue_uuid` and `linear_issue_id` for an existing umbrella issue. Reuse validates the approved title, team, project, Backlog/archive state, and absence of `loop:ready`. Sub-issues may inherit type, project, and priority from the parent and use `depends_on_keys` to reference sibling keys. Workloop validates the entire graph before the first write, creates issues in topological order, gives only sub-issues `loop:ready`, and returns partial progress if Linear fails. Returned execution waves also account for overlapping `touches` and configured hot paths, so cards shown in one wave are safe for the scheduler to run concurrently. Rerun the exact file to resume idempotently.
+`--plan-file` creates or explicitly reuses one parent roll-up issue and creates 2–20 executable Linear sub-issues. The parent starts in Backlog without `loop:ready`; it contains the approved roll-up contract and is not scheduled while children are unfinished. Set `parent.mode` to `create`, or use `reuse` with `linear_issue_uuid` and `linear_issue_id` for an existing umbrella issue. Reuse validates the approved title, team, project, Backlog/archive state, and absence of `loop:ready`. Sub-issues may inherit type, project, and priority from the parent and use `depends_on_keys` to reference sibling keys. Workloop validates the entire graph before the first write, creates issues in topological order, gives executable sub-issues `loop:ready`, and returns partial progress if Linear fails. Once every direct child is Done, `loopctl sync` automatically adds `loop:ready` to the parent, moves it to In Review, and imports a PR-free roll-up QA card; QA checks the parent acceptance criteria on the current integrated `origin/dev`, then `sync-done` closes it. Returned execution waves also account for overlapping `touches` and configured hot paths, so cards shown in one wave are safe for the scheduler to run concurrently. Rerun the exact file to resume idempotently.
 
 ```bash
 loopctl groom --list-projects
@@ -90,7 +90,7 @@ loopctl groom --plan-file /tmp/approved-plan.json --approved-by alice
 loopctl sync
 ```
 
-Imports eligible `loop:ready` issues from the configured Linear Backlog, creates idempotent internal runtime cards, stores the Linear state and labels used by the board view, and moves accepted issues to Todo. For a non-terminal issue with a valid approved `loop-card` but no `loop:ready`, it restores the label before importing; parent plan issues without an executable `loop-card` are not promoted. It also refreshes those snapshots for cards already known and retries pending outbound state/label changes. It automatically reads `LINEAR_API_TOKEN` from `~/.env`.
+Imports eligible `loop:ready` issues from the configured Linear Backlog, creates idempotent internal runtime cards, stores the Linear state and labels used by the board view, and moves accepted issues to Todo. For a non-terminal issue with a valid approved `loop-card` but no `loop:ready`, it restores the label before importing. A recognized plan parent is held until every direct child is Done; then sync promotes it to `loop:ready` and In Review, importing it as a PR-free roll-up QA card. It also refreshes those snapshots for cards already known and retries pending outbound state/label changes. It automatically reads `LINEAR_API_TOKEN` from `~/.env`.
 
 ```bash
 loopctl sync
