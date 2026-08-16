@@ -8,6 +8,33 @@ import (
 )
 
 var acceptanceChecklistLineRE = regexp.MustCompile(`^(\s*-\s*)\[[ xX]\](\s+.*)$`)
+var acceptanceHeadingRE = regexp.MustCompile(`(?i)^acceptance\s+(criteria|checklist)$`)
+
+func markdownHeadingLevel(line string) int {
+	trimmed := strings.TrimSpace(line)
+	level := 0
+	for level < len(trimmed) && trimmed[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 6 || level == len(trimmed) || trimmed[level] != ' ' {
+		return 0
+	}
+	return level
+}
+
+func acceptanceHeadingLevel(line string) int {
+	level := markdownHeadingLevel(line)
+	if level == 0 {
+		return 0
+	}
+	trimmed := strings.TrimSpace(line)
+	name := strings.TrimSpace(trimmed[level:])
+	name = strings.TrimSpace(strings.TrimRight(name, "#"))
+	if !acceptanceHeadingRE.MatchString(name) {
+		return 0
+	}
+	return level
+}
 
 func (c *linearClient) issueDescription(ctx context.Context, issueID string) (string, error) {
 	const q = `query LoopIssueDescription($id: String!) { issue(id: $id) { id description } }`
@@ -46,22 +73,28 @@ func (c *linearClient) updateDescription(ctx context.Context, issueID, descripti
 }
 
 // mapAcceptanceChecklist changes only the generated Markdown checklist under
-// the Acceptance criteria heading. The loop-card JSON block is deliberately
-// left byte-for-byte intact so the contract hash remains stable.
+// an Acceptance criteria/checklist heading. The loop-card JSON block is
+// deliberately left byte-for-byte intact so the contract hash remains stable.
 func mapAcceptanceChecklist(description string, results []AcceptanceResult) (string, error) {
 	lines := strings.Split(description, "\n")
 	inAcceptance := false
 	foundHeading := false
+	acceptanceLevel := 0
 	checklistCount := 0
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "## Acceptance criteria" {
+		if level := acceptanceHeadingLevel(trimmed); level > 0 {
 			inAcceptance = true
 			foundHeading = true
+			acceptanceLevel = level
 			continue
 		}
-		if inAcceptance && (strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "```loop-card")) {
-			inAcceptance = false
+		if inAcceptance {
+			if level := markdownHeadingLevel(trimmed); level > 0 && level <= acceptanceLevel {
+				inAcceptance = false
+			} else if strings.HasPrefix(trimmed, "```loop-card") {
+				inAcceptance = false
+			}
 		}
 		if !inAcceptance {
 			continue

@@ -367,8 +367,10 @@ func (s *State) RetryQA(id, by, note string) (map[string]any, error) {
 	if before.SpecChanged {
 		return nil, E(2, "cannot retry QA while the Linear contract is changed")
 	}
-	if _, err := prNumber(before.PR); err != nil {
-		return nil, E(2, "qa-retry requires an existing PR")
+	if before.ExecutionMode != "rollup" {
+		if _, err := prNumber(before.PR); err != nil {
+			return nil, E(2, "qa-retry requires an existing PR")
+		}
 	}
 	for _, finding := range before.QAFindings {
 		if finding.Severity == "blocking" {

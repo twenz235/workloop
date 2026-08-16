@@ -26,6 +26,20 @@ func TestMapAcceptanceChecklistPreservesLoopCardAndMapsOnlyPassed(t *testing.T) 
 	}
 }
 
+func TestMapAcceptanceChecklistAcceptsLegacyChecklistHeading(t *testing.T) {
+	description := "## Problem\nproblem\n\n## Acceptance checklist\n- [ ] first\n- [ ] second\n\n## Execution plan\n- keep this unchanged\n"
+	updated, err := mapAcceptanceChecklist(description, []AcceptanceResult{
+		{CriterionIndex: 1, Status: "passed", Evidence: "test one"},
+		{CriterionIndex: 2, Status: "failed", Evidence: "test two failed"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(updated, "## Acceptance checklist\n- [x] first\n- [ ] second") {
+		t.Fatalf("updated checklist=%q", updated)
+	}
+}
+
 func TestQAReportCommentListsEveryAcceptanceResult(t *testing.T) {
 	base := "base-sha"
 	head := "head-sha"

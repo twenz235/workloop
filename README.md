@@ -155,9 +155,10 @@ loopctl qa-retry eng-123 --by human/alice \
 ```
 
 `qa-retry` is the explicit human path from `needs_attention` back to In
-Review. It requires an existing PR, an unchanged contract, and no unresolved
-blocking finding; it clears old QA evidence and records the recovery note in
-Linear.
+Review. Standard cards require an existing PR; automatic parent roll-up cards
+intentionally have no PR. Both modes require an unchanged contract and no
+unresolved blocking finding; the command clears old QA evidence and records
+the recovery note in Linear.
 
 Never edit `.loopctl` runtime files manually or move a card directly to Done.
 Only QA merge followed by a verified `sync-done` can complete work.
