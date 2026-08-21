@@ -71,10 +71,19 @@ type RoleConfig struct {
 }
 
 type RunnerConfig struct {
-	Adapter      string `json:"adapter"`
+	Adapter      string                `json:"adapter"`
+	Provider     string                `json:"provider"`
+	ProviderPath string                `json:"provider_path"`
+	Providers    []RunnerProviderEntry `json:"providers"`
+	StopGraceSec int                   `json:"stop_grace_sec"`
+}
+
+// RunnerProviderEntry is one pool member when Workloop auto-splits Dev/QA
+// attempts across more than one provider CLI. An empty Providers pool keeps
+// the single Provider/ProviderPath behavior unchanged.
+type RunnerProviderEntry struct {
 	Provider     string `json:"provider"`
 	ProviderPath string `json:"provider_path"`
-	StopGraceSec int    `json:"stop_grace_sec"`
 }
 
 type LimitsConfig struct {

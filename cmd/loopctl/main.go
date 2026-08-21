@@ -733,11 +733,20 @@ func startCmd(s *core.State, args []string) error {
 			return err
 		}
 	}
-	if s.Config.Runner.ProviderPath == "" {
-		return core.E(2, "provider_path is not configured")
+	providerPaths := []string{s.Config.Runner.ProviderPath}
+	if len(s.Config.Runner.Providers) > 0 {
+		providerPaths = providerPaths[:0]
+		for _, p := range s.Config.Runner.Providers {
+			providerPaths = append(providerPaths, p.ProviderPath)
+		}
 	}
-	if info, err := os.Stat(s.Config.Runner.ProviderPath); err != nil || info.Mode().Perm()&0111 == 0 {
-		return core.E(2, "provider CLI unavailable")
+	for _, p := range providerPaths {
+		if p == "" {
+			return core.E(2, "provider_path is not configured")
+		}
+		if info, err := os.Stat(p); err != nil || info.Mode().Perm()&0111 == 0 {
+			return core.E(2, "provider CLI unavailable")
+		}
 	}
 	exe, err := os.Executable()
 	if err != nil {
