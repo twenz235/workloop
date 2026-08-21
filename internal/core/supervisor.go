@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -184,6 +185,24 @@ func (s *State) launchWorker(ctx context.Context, executable, id, role string, d
 	done <- workerDone{cardID: id, role: role, contractHash: contractHash, attempt: attempt, baseSHA: envelope.BaseSHA, headSHA: envelope.HeadSHA, stage: stage, logOutput: logOutput, result: &result, err: err}
 }
 
+// selectProvider picks which provider CLI runs one Dev/QA attempt. With no
+// pool configured it returns the single legacy provider unchanged. With a
+// pool of two or more, it deterministically spreads attempts across every
+// pool member by hashing the card id, role, and attempt number: the same
+// attempt always resolves to the same provider (reproducible for debugging),
+// while a retry (attempt+1) usually lands on a different provider, which
+// gives a free second opinion when one provider CLI is flaky.
+func (s *State) selectProvider(id, role string, attempt int) (provider, providerPath string) {
+	pool := s.Config.Runner.Providers
+	if len(pool) == 0 {
+		return s.Config.Runner.Provider, s.Config.Runner.ProviderPath
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id + "\x00" + role + "\x00" + strconv.Itoa(attempt)))
+	entry := pool[int(h.Sum32())%len(pool)]
+	return entry.Provider, entry.ProviderPath
+}
+
 func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnvelope, error) {
 	_, _, raw, c, err := s.readCardPath(id)
 	if err != nil {
@@ -284,7 +303,8 @@ func (s *State) prepareEnvelope(ctx context.Context, id, role string) (RunnerEnv
 	}
 	cardData, _ := json.Marshal(raw)
 	output := filepath.Join(s.Root, "journal", "workers", id, fmt.Sprintf("%d.result.json", attempt))
-	return RunnerEnvelope{Version: 1, CardID: id, Role: role, Attempt: attempt, Provider: s.Config.Runner.Provider, ProviderPath: s.Config.Runner.ProviderPath, StateRoot: s.Root, Worktree: worktree, Branch: branch, BaseRef: c.Base, BaseSHA: baseSHA, BaseSyncPending: baseSyncPending, BaseSyncNote: baseSyncNote, HeadSHA: headSHA, ExecutionMode: c.ExecutionMode, ContractHash: c.ContractHash, OutputPath: output, Card: cardData}, nil
+	provider, providerPath := s.selectProvider(id, role, attempt)
+	return RunnerEnvelope{Version: 1, CardID: id, Role: role, Attempt: attempt, Provider: provider, ProviderPath: providerPath, StateRoot: s.Root, Worktree: worktree, Branch: branch, BaseRef: c.Base, BaseSHA: baseSHA, BaseSyncPending: baseSyncPending, BaseSyncNote: baseSyncNote, HeadSHA: headSHA, ExecutionMode: c.ExecutionMode, ContractHash: c.ContractHash, OutputPath: output, Card: cardData}, nil
 }
 
 func (s *State) verifyDevReviewGate(ctx context.Context, id string, card *Card, reportedBaseSHA, reportedHeadSHA string) (string, error) {

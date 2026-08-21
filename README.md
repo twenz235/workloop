@@ -128,6 +128,23 @@ Startup performs an immediate sync and then polls every 300 seconds by default. 
 loopctl config set linear.sync_interval_sec 300
 ```
 
+By default every Dev and QA attempt runs on the single provider set at `init`
+(`loopctl config set runner.provider codex` or `claude`). To spread attempts
+across both provider CLIs instead, set a pool of two or more:
+
+```bash
+loopctl config set runner.providers codex,claude
+```
+
+Workloop deterministically hashes each card id, role, and attempt number to
+pick a pool member, so a given attempt always resolves to the same provider,
+while a retry usually lands on a different one — a free second opinion when
+one provider CLI is flaky. Clear the pool to go back to the single provider:
+
+```bash
+loopctl config set runner.providers ""
+```
+
 ## Grooming
 
 The included `groom` skill clarifies and scopes a request before asking for explicit approval. It automatically keeps small work as one card or turns large work into one parent plus dependency-ordered executable sub-issues, explicitly reusing an existing Linear issue as the parent when appropriate. A plan parent starts in Backlog without `loop:ready`; after every direct child reaches Done, `loopctl sync` automatically adds `loop:ready`, moves the parent to In Review, and schedules a PR-free roll-up QA pass against the integrated `origin/dev`. All executable cards have one `type:*` label, a Linear project, priority, and acceptance checklist. Screenshots and diagrams can be supplied as grooming context and attached through safe HTTPS references. Normal intake is Groom → Linear → `loopctl sync`; `loopctl add` is a recovery path for validated card JSON.

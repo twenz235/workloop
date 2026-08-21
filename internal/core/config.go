@@ -167,7 +167,7 @@ func (s *State) SaveConfig() error {
 	return writeAtomic(filepath.Join(s.Root, "config.json"), b, 0600)
 }
 func (s *State) ConfigSet(key, value string) (any, error) {
-	allowed := map[string]bool{"linear.sync_interval_sec": true, "runner.provider": true, "runner.provider_path": true, "dev.max_workers": true, "qa.max_workers": true, "limits.max_in_flight": true, "limits.max_open_prs": true}
+	allowed := map[string]bool{"linear.sync_interval_sec": true, "runner.provider": true, "runner.provider_path": true, "runner.providers": true, "dev.max_workers": true, "qa.max_workers": true, "limits.max_in_flight": true, "limits.max_open_prs": true}
 	if !allowed[key] {
 		return nil, E(2, "config key is not mutable")
 	}
@@ -179,19 +179,36 @@ func (s *State) ConfigSet(key, value string) (any, error) {
 		}
 		s.Config.Linear.SyncIntervalSec = n
 	case "runner.provider":
-		if value != "codex" && value != "claude" {
-			return nil, E(2, "provider must be codex or claude")
-		}
-		path, e := exec.LookPath(value)
+		path, e := resolveProviderPath(value)
 		if e != nil {
-			return nil, E(2, "provider CLI unavailable")
-		}
-		path, _ = filepath.Abs(path)
-		if resolved, e := filepath.EvalSymlinks(path); e == nil {
-			path = resolved
+			return nil, e
 		}
 		s.Config.Runner.Provider = value
 		s.Config.Runner.ProviderPath = path
+	case "runner.providers":
+		if strings.TrimSpace(value) == "" {
+			s.Config.Runner.Providers = nil
+			break
+		}
+		names := strings.Split(value, ",")
+		seen := map[string]bool{}
+		pool := make([]RunnerProviderEntry, 0, len(names))
+		for _, name := range names {
+			name = strings.TrimSpace(name)
+			if seen[name] {
+				return nil, E(2, "runner.providers must not repeat a provider")
+			}
+			seen[name] = true
+			path, e := resolveProviderPath(name)
+			if e != nil {
+				return nil, e
+			}
+			pool = append(pool, RunnerProviderEntry{Provider: name, ProviderPath: path})
+		}
+		if len(pool) < 2 {
+			return nil, E(2, "runner.providers needs at least two comma-separated providers; use runner.provider for a single one")
+		}
+		s.Config.Runner.Providers = pool
 	case "runner.provider_path":
 		if !filepath.IsAbs(value) {
 			return nil, E(2, "provider_path must be absolute")
@@ -221,6 +238,23 @@ func (s *State) ConfigSet(key, value string) (any, error) {
 		return nil, err
 	}
 	return s.ConfigGet(key)
+}
+
+// resolveProviderPath validates that name is a known provider CLI ("codex" or
+// "claude") installed on PATH, and returns its resolved absolute path.
+func resolveProviderPath(name string) (string, error) {
+	if name != "codex" && name != "claude" {
+		return "", E(2, "provider must be codex or claude")
+	}
+	path, e := exec.LookPath(name)
+	if e != nil {
+		return "", E(2, "provider CLI unavailable")
+	}
+	path, _ = filepath.Abs(path)
+	if resolved, e := filepath.EvalSymlinks(path); e == nil {
+		path = resolved
+	}
+	return path, nil
 }
 
 func (s *State) Startup(action, executable, envFile string) error {
